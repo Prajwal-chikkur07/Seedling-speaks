@@ -1,0 +1,22 @@
+{
+  "name": "SeedlingSpeaks",
+  "short_name": "SeedlingSpeaks",
+  "description": "Translate audio, rewrite tone, and share across platforms",
+  "start_url": "/app",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#111827",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "seedlinglabs-logo.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "seedlinglabs-logo.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

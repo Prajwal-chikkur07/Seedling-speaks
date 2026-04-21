@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,500;0,9..144,600;1,9..144,400&family=DM+Sans:wght@300;400;500;600&display=swap');
+
+    :root {
+      --surface: #FDFAF4;
+      --saffron: #E8820C;
+      --text-warm: #4A3F35;
+      --border-warm: rgba(90,70,50,0.20);
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: transparent;
+      font-family: 'DM Sans', sans-serif;
+      overflow: hidden;
+      padding: 8px;
+    }
+    .menu {
+      background: var(--surface);
+      border: 1px solid var(--border-warm);
+      border-radius: 14px;
+      padding: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      box-shadow: 0 12px 48px rgba(28,25,23,0.20), 0 2px 8px rgba(28,25,23,0.10);
+    }
+    .option {
+      border: none;
+      background: transparent;
+      color: var(--text-warm);
+      height: 42px;
+      padding: 0 14px;
+      border-radius: 9px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 500;
+      text-align: left;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      transition: all 0.15s ease;
+      font-family: inherit;
+    }
+    .option:hover { background: rgba(232,130,12,0.08); color: var(--saffron); }
+    .dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      background: var(--saffron);
+    }
+    .arrow { margin-left: auto; color: rgba(90,70,50,0.35); font-size: 14px; }
+  </style>
+</head>
+<body>
+  <div class="menu">
+    <button class="option" id="nativeToEnglish">
+      <span class="dot"></span>
+      Native to English
+      <span class="arrow">›</span>
+    </button>
+  </div>
+  <script>
+    const { ipcRenderer } = require('electron');
+    document.getElementById('nativeToEnglish').addEventListener('click', () => {
+      ipcRenderer.send('select-mode', 'nativeToEnglish');
+    });
+  </script>
+</body>
+</html>
