@@ -53,36 +53,42 @@ def translate_speech_to_text(audio_file_path: str, content_type: str = "audio/wa
         return _transcribe_with_gemini(audio_file_path)
 
 def _transcribe_with_gemini(audio_file_path: str) -> dict:
-    """Fallback: use HuggingFace Whisper to transcribe audio when Sarvam fails."""
+    """Fallback: use Google Gemini to transcribe audio when Sarvam fails."""
     try:
-        HF_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
-        if not HF_API_KEY:
-            raise Exception("HUGGINGFACE_API_KEY not set")
-        import requests as req
+        GEMINI_KEY = os.getenv("GEMINI_API_KEY")
+        if not GEMINI_KEY:
+            raise Exception("GEMINI_API_KEY not set")
+
+        import google.generativeai as genai
+        genai.configure(api_key=GEMINI_KEY)
+        model = genai.GenerativeModel("gemini-2.0-flash")
+
         with open(audio_file_path, "rb") as f:
             audio_bytes = f.read()
-        headers = {"Authorization": f"Bearer {HF_API_KEY}"}
-        resp = req.post(
-            "https://api-inference.huggingface.co/models/openai/whisper-large-v3",
-            headers=headers,
-            data=audio_bytes,
-            timeout=60,
-        )
-        if resp.status_code == 503:
-            import time; time.sleep(10)
-            resp = req.post(
-                "https://api-inference.huggingface.co/models/openai/whisper-large-v3",
-                headers=headers,
-                data=audio_bytes,
-                timeout=60,
-            )
-        if resp.status_code != 200:
-            raise Exception(f"Whisper failed: {resp.text[:200]}")
-        transcript = resp.json().get("text", "").strip()
-        logger.info(f"Whisper transcription: {transcript[:100]}")
+
+        # Determine mime type from extension
+        ext = os.path.splitext(audio_file_path)[1].lower()
+        mime_map = {
+            ".wav": "audio/wav", ".webm": "audio/webm", ".mp3": "audio/mpeg",
+            ".m4a": "audio/mp4", ".ogg": "audio/ogg", ".flac": "audio/flac",
+        }
+        mime_type = mime_map.get(ext, "audio/webm")
+
+        import base64
+        audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+
+        response = model.generate_content([
+            "Transcribe the following audio to English text. "
+            "If the speaker is not speaking English, translate it to English. "
+            "Return ONLY the transcribed/translated text, nothing else.",
+            {"mime_type": mime_type, "data": audio_b64},
+        ])
+
+        transcript = response.text.strip()
+        logger.info(f"Gemini audio transcription: {transcript[:100]}")
         return {"transcript": transcript, "confidence": None, "source_language": "en-IN"}
     except Exception as e:
-        logger.error(f"Whisper transcription also failed: {e}")
+        logger.error(f"Gemini audio transcription failed: {e}")
         raise Exception(f"Transcription failed: {e}")
 
 

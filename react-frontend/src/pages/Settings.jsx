@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
-import { RefreshCw, Database, Trash2, Zap, BarChart2, Moon, Sun, Monitor, Globe, X, ShieldCheck } from 'lucide-react';
+import { RefreshCw, Database, Trash2, Zap, BarChart2, Moon, Sun, Globe, X, ShieldCheck } from 'lucide-react';
 import * as api from '../services/api';
 import { getLabels } from '../services/uiLabels';
-import { getWidgetStatus, toggleWidgetEnabled } from '../services/widgetService';
+
 
 const UI_LANGUAGES = [
   { code: 'en',    name: 'English'   },
@@ -35,33 +35,19 @@ function Toggle({ on, onToggle, disabled }) {
 }
 
 export default function Settings() {
-  const { state, toggleDark, setUiLanguage, setWidgetEnabled } = useApp();
+  const { state, toggleDark, setUiLanguage } = useApp();
   const L = getLabels(state.uiLanguage);
 
   const [cacheStats, setCacheStats] = useState(null);
   const [clearing, setClearing] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
-  const [widgetLoading, setWidgetLoading] = useState(false);
-  const [widgetRunning, setWidgetRunning] = useState(null);
   const [consentGiven, setConsentGiven] = useState(state.authUser?.consentGiven ?? false);
   const [consentSaving, setConsentSaving] = useState(false);
 
   const loadCache = async () => { try { setCacheStats(await api.getCacheStats()); } catch {} };
   useEffect(() => { loadCache(); }, []);
 
-  useEffect(() => {
-    (async () => {
-      const status = await getWidgetStatus();
-      if (status) {
-        setWidgetRunning(true);
-      } else {
-        setWidgetRunning(false);
-        // if widget isn't running but state says enabled, reset it
-        if (state.widgetEnabled) setWidgetEnabled(false);
-      }
-    })();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+
 
   const handleClearCache = async () => {
     setClearing(true);
@@ -82,23 +68,7 @@ export default function Settings() {
     }
   };
 
-  const isWidgetRunning = widgetRunning === true;
 
-  const toggleWidget = async () => {
-    if (!isWidgetRunning && !state.widgetEnabled) return; // can't enable if widget not running
-    setWidgetLoading(true);
-    try {
-      const data = await toggleWidgetEnabled({ enabled: !state.widgetEnabled });
-      setWidgetEnabled(data.enabled);
-      // re-check running status
-      setWidgetRunning(true);
-    } catch {
-      // if disabling and widget is gone, just turn it off locally
-      if (state.widgetEnabled) setWidgetEnabled(false);
-      // if enabling but widget unreachable, don't pretend it worked
-    }
-    finally { setWidgetLoading(false); }
-  };
 
   const hitRate = cacheStats && cacheStats.total_entries > 0
     ? Math.round((cacheStats.total_hits / (cacheStats.total_hits + cacheStats.total_entries)) * 100) : 0;
@@ -222,42 +192,6 @@ export default function Settings() {
             </div>
             <Toggle on={state.darkMode} onToggle={toggleDark} />
           </div>
-        </div>
-
-        {/* Desktop Widget */}
-        <div className="bg-white rounded-2xl border border-gray-100 px-5 py-4 shadow-sm hover:shadow-md transition-all">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-xl bg-gray-100 flex items-center justify-center shrink-0">
-                <Monitor className="w-4 h-4 text-gray-600" />
-              </div>
-              <div>
-                <p className="text-[14px] font-semibold text-gray-900">Desktop Widget</p>
-                <p className={`text-[12px] mt-0.5 ${!isWidgetRunning ? 'text-amber-500 font-medium' : state.widgetEnabled ? 'text-green-500 font-medium' : 'text-gray-400'}`}>
-                  {!isWidgetRunning
-                    ? '⚠ Widget app not running'
-                    : state.widgetEnabled
-                    ? '● Floating bubble visible'
-                    : '○ Floating bubble hidden'}
-                </p>
-              </div>
-            </div>
-            <Toggle on={state.widgetEnabled} onToggle={toggleWidget} disabled={widgetLoading || !isWidgetRunning} />
-          </div>
-          {!isWidgetRunning ? (
-            <div className="bg-amber-50 border border-amber-100 rounded-xl px-4 py-3 mb-2">
-              <p className="text-[12px] text-amber-700 font-medium">Start the widget app first:</p>
-              <code className="text-[12px] text-amber-800 font-mono">cd desktop-widget && npm start</code>
-            </div>
-          ) : isWidgetRunning && (
-            <p className="text-[12px] text-gray-400 mb-2">
-              Shortcut: <span className="font-semibold text-gray-600">Cmd+Shift+Space</span> (Mac) · <span className="font-semibold text-gray-600">Ctrl+Shift+Space</span> (Win)
-            </p>
-          )}
-          <button onClick={() => { localStorage.setItem('widgetSetupDone', 'false'); window.location.reload(); }}
-            className="text-[12px] text-gray-400 hover:text-gray-700 transition-colors">
-            Re-run setup →
-          </button>
         </div>
 
         {/* API Usage */}

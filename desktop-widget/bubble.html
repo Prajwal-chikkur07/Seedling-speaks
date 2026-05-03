@@ -167,6 +167,12 @@
       pill.style.display    = recording ? 'none'  : 'flex';
       recPill.style.display = recording ? 'flex'  : 'none';
     });
+
+    // ── Right-click to Quit ──
+    window.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      ipcRenderer.send('show-bubble-menu');
+    });
   </script>
 </body>
 </html>

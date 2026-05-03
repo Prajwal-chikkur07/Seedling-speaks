@@ -7,11 +7,12 @@ const fs = require('fs');
 
 let bubbleWin = null;
 let overlayWin = null;
+let tray = null; // Menu bar tray
 let toastWin = null;
 let screenOverlayWin = null;
 let regionSelectWin = null;
 let isOverlayOpen = false;
-let isBubbleEnabled = false; // starts hidden — enabled via the web app
+let isBubbleEnabled = true; // auto-enabled — no web app needed
 let toastTimer = null;
 let isClickModeActive = false;
 let clickModeLang = 'hi-IN';
@@ -99,6 +100,47 @@ function startControlServer() {
   server.listen(27182, '127.0.0.1', () => console.log('Control server: http://127.0.0.1:27182'));
 }
 
+// ── Tray (Menu Bar) ───────────────────────────────────────────────────────────
+function createTray() {
+  const { Tray, Menu } = require('electron');
+  // Use the same icon.png for the tray (Electron will scale it)
+  tray = new Tray(path.join(__dirname, 'icon.png'));
+  updateTrayMenu();
+  tray.setToolTip('SeedlingSpeaks Widget');
+}
+
+function updateTrayMenu() {
+  const { Menu } = require('electron');
+  const contextMenu = Menu.buildFromTemplate([
+    { label: 'SeedlingSpeaks Widget', enabled: false },
+    { type: 'separator' },
+    { 
+      label: 'Enable Floating Widget', 
+      type: 'checkbox', 
+      checked: isBubbleEnabled,
+      click: () => toggleWidgetState()
+    },
+    { type: 'separator' },
+    { label: 'Open Settings', click: () => showOverlay('nativeToEnglish') },
+    { type: 'separator' },
+    { label: 'Quit', click: () => app.quit() }
+  ]);
+  tray.setContextMenu(contextMenu);
+}
+
+function toggleWidgetState() {
+  isBubbleEnabled = !isBubbleEnabled;
+  if (isBubbleEnabled) {
+    if (bubbleWin) bubbleWin.show();
+    showToast({ type: 'success', message: 'Widget Enabled' }, 2000);
+  } else {
+    if (bubbleWin) bubbleWin.hide();
+    hideOverlay();
+    showToast({ type: 'info', message: 'Widget Disabled' }, 2000);
+  }
+  updateTrayMenu();
+}
+
 // ── Screenshot helper — uses macOS screencapture ──────────────────────────────
 async function captureScreen() {
   const tmpFile = path.join(os.tmpdir(), `vt_ss_${Date.now()}.png`);
@@ -152,7 +194,7 @@ function cropPng(srcPath, x, y, w, h) {
 function visionTranslate(imgPath, lang) {
   const r = spawnSync('curl', [
     '-s', '-X', 'POST',
-    'http://127.0.0.1:8000/api/vision-translate',
+    'https://seedlingspeaks-backend-0vkj.onrender.com/api/vision-translate',
     '-F', `file=@${imgPath};type=image/png`,
     '-F', `target_language=${lang}`,
   ], { encoding: 'utf8', timeout: 60000 });
@@ -291,7 +333,7 @@ function createBubble() {
     x: Math.round(width / 2 - bw / 2), y: height - bh - 20,
     frame: false, transparent: true, alwaysOnTop: true,
     skipTaskbar: true, resizable: false, movable: true, hasShadow: false,
-    show: false, // hidden until enabled via web app
+    show: isBubbleEnabled, // auto-show if enabled
     webPreferences: { nodeIntegration: true, contextIsolation: false },
   });
   bubbleWin.loadFile('bubble.html');
@@ -483,8 +525,8 @@ function checkScreenPermission() {
 
 // ── App ready ─────────────────────────────────────────────────────────────────
 app.whenReady().then(() => {
-  loadWidgetConfig();
   startControlServer();
+  createTray();
   createBubble();
   createOverlay();
   createToast();
@@ -624,6 +666,19 @@ ipcMain.on('hide-overlay', () => hideOverlay());
 ipcMain.on('bubble-clicked', () => toggleRecording());
 ipcMain.on('stop-recording-ipc', () => stopRecording());
 
+ipcMain.on('show-bubble-menu', (event) => {
+  const { Menu, MenuItem } = require('electron');
+  const menu = new Menu();
+  menu.append(new MenuItem({ label: 'SeedlingSpeaks Widget', enabled: false }));
+  menu.append(new MenuItem({ type: 'separator' }));
+  menu.append(new MenuItem({ label: 'Open Settings', click: () => showOverlay('nativeToEnglish') }));
+  menu.append(new MenuItem({ type: 'separator' }));
+  menu.append(new MenuItem({ label: 'Quit', click: () => app.quit() }));
+  menu.popup(BrowserWindow.fromWebContents(event.sender));
+});
+
+ipcMain.on('quit-app', () => app.quit());
+
 // ── Live transcript update → forward to overlay ───────────────────────────────
 ipcMain.on('live-transcript-update', (_, text) => {
   if (overlayWin) overlayWin.webContents.send('live-transcript', text);
@@ -675,9 +730,13 @@ ipcMain.on('hide-toast', () => {
 });
 
 ipcMain.on('bubble-drag', (_, { x, y }) => {
-  if (bubbleWin) {
-    bubbleWin.setPosition(Math.round(x), Math.round(y));
-    if (isOverlayOpen) positionOverlay();
+  if (bubbleWin && typeof x === 'number' && typeof y === 'number') {
+    const nx = Math.round(x);
+    const ny = Math.round(y);
+    if (!isNaN(nx) && !isNaN(ny)) {
+      bubbleWin.setPosition(nx, ny);
+      if (isOverlayOpen) positionOverlay();
+    }
   }
 });
 
@@ -848,7 +907,7 @@ function translateText(text, lang) {
   });
   const r = spawnSync('curl', [
     '-s', '-X', 'POST',
-    'http://127.0.0.1:8000/api/translate-text',
+    'https://seedlingspeaks-backend-0vkj.onrender.com/api/translate-text',
     '-H', 'Content-Type: application/json',
     '-d', body,
   ], { encoding: 'utf8', timeout: 30000 });

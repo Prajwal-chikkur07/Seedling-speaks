@@ -1,6 +1,6 @@
 const { ipcRenderer } = require('electron');
 
-const API_BASE = 'http://127.0.0.1:8000/api';
+const API_BASE = 'https://seedlingspeaks-backend-0vkj.onrender.com/api';
 
 const ALL_LANGUAGES = {
   'hi-IN':'Hindi','bn-IN':'Bengali','ta-IN':'Tamil','te-IN':'Telugu',
@@ -111,7 +111,12 @@ function renderResult() {
             <path d="M3 3v5h5"/>
           </svg>
         </button>
-        <button class="icon-btn" id="closeBtn" title="Close">
+        <button class="icon-btn" id="quitBtn" title="Quit Application">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
+          </svg>
+        </button>
+        <button class="icon-btn" id="closeBtn" title="Close Panel">
           <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
       </div>
@@ -160,6 +165,7 @@ function renderResult() {
 }
 
 function bindResultEvents() {
+  document.getElementById('quitBtn')?.addEventListener('click', () => ipcRenderer.send('quit-app'));
   document.getElementById('closeBtn')?.addEventListener('click', () => ipcRenderer.send('hide-overlay'));
 
   document.getElementById('restartBtn')?.addEventListener('click', () => {

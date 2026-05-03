@@ -12,6 +12,30 @@ npm run dev
 cd chrome-extension
 npm run build
 
+> Mobile App (Expo)
+cd mobile-app
+npx expo start
+
+> Desktop Widget (dev mode)
+cd desktop-widget
+npm install
+npm start
+
+> Desktop Widget (build installable DMG)
+cd desktop-widget
+npm install
+npm run dist
+
+After the build completes, find the .dmg file in `desktop-widget/dist/`.
+Double-click the DMG → drag SeedlingSpeaks Widget to Applications.
+The widget auto-enables on launch — no web app needed.
+
+### 💡 Updating the Widget
+If you make changes to the code in `desktop-widget/`, you must rebuild the DMG for those changes to be reflected in the installed app:
+1. Run `npm run dist` again.
+2. Open the new `.dmg` in `dist/`.
+3. Drag it to **Applications** and select **"Replace"** when macOS asks.
+
 After the extension builds:
 1. Open Chrome → chrome://extensions
 2. Enable "Developer mode" (top right)
@@ -133,34 +157,23 @@ Hindi, Bengali, Tamil, Telugu, Malayalam, Marathi, Gujarati, Kannada, Punjabi, O
 
 ```
 Capstone-project/
-├── Translation-agent/
-│   ├── Translate-agent/
-│   │   ├── backend/
-│   │   │   ├── main.py
-│   │   │   ├── requirements.txt
-│   │   │   ├── .env
-│   │   │   ├── database.py
-│   │   │   ├── models.py
-│   │   │   ├── routers/
-│   │   │   │   └── auth_router.py
-│   │   │   └── services/
-│   │   │       ├── sarvam_client.py
-│   │   │       ├── gemini_client.py
-│   │   │       ├── auth.py
-│   │   │       └── tts_service.py
-│   │   └── react-frontend/
-│   │       ├── src/
-│   │       │   ├── pages/
-│   │       │   ├── components/
-│   │       │   ├── context/
-│   │       │   ├── hooks/
-│   │       │   └── services/
-│   │       └── package.json
+├── backend/
+│   ├── main.py
+│   ├── requirements.txt
+│   ├── .env
+│   ├── database.py
+│   └── models.py
+├── react-frontend/
+│   ├── src/
+│   └── package.json
+├── mobile-app/
+│   ├── app/
+│   ├── app.json
+│   └── package.json
+├── desktop-widget/
+│   └── package.json
 ├── chrome-extension/
 │   ├── public/
-│   │   ├── manifest.json
-│   │   ├── content.js
-│   │   └── background.js
 │   └── src/
 └── README.md
 ```
@@ -179,7 +192,7 @@ Capstone-project/
 
 1. **Navigate to backend directory**:
 ```bash
-cd Translation-agent/Translate-agent/backend
+cd backend
 ```
 
 2. **Create virtual environment**:
@@ -210,7 +223,7 @@ uvicorn main:app --reload --port 8000
 
 1. **Navigate to frontend directory**:
 ```bash
-cd Translation-agent/Translate-agent/react-frontend
+cd react-frontend
 ```
 
 2. **Install dependencies**:
@@ -234,6 +247,23 @@ npm run build
 ```
 
 Load `chrome-extension/dist` as unpacked extension in `chrome://extensions`.
+
+### Mobile App (Expo) Setup
+
+1. **Navigate to mobile-app directory**:
+```bash
+cd mobile-app
+```
+
+2. **Install dependencies**:
+```bash
+npm install
+```
+
+3. **Start Expo**:
+```bash
+npx expo start
+```
 
 ---
 

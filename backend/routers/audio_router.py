@@ -70,7 +70,11 @@ async def handle_audio_translation(file: UploadFile = File(...)):
     )
 
     os.makedirs("temp_audio", exist_ok=True)
-    temp_path = f"temp_audio/temp_{original_filename}"
+    # Use unique filename to prevent race conditions with concurrent requests
+    import uuid
+    unique_id = uuid.uuid4().hex[:8]
+    ext = os.path.splitext(original_filename)[1] or ".webm"
+    temp_path = f"temp_audio/{unique_id}{ext}"
     file_size = 0
 
     try:

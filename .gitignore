@@ -16,3 +16,6 @@ __pycache__/
 
 # Node
 node_modules/
+
+# Desktop Widget build output
+desktop-widget/dist/
