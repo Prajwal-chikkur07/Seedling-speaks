@@ -18,10 +18,9 @@ const FEATURES = [
 ];
 
 const MORE_ITEMS = [
-  { title: 'Templates', icon: '📑', route: '/templates' },
-  { title: 'Dictionary', icon: '📖', route: '/dictionary' },
-  { title: 'Analytics', icon: '📊', route: '/analytics' },
-  { title: 'Settings', icon: '⚙️', route: '/settings' },
+  { title: 'History', icon: '🕐', route: '/(drawer)/history' },
+  { title: 'Profile', icon: '👤', route: '/(drawer)/profile' },
+  { title: 'Settings', icon: '⚙️', route: '/(drawer)/settings' },
 ];
 
 function getGreeting() {

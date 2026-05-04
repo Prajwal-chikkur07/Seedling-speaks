@@ -35,14 +35,6 @@ const MENU_SECTIONS = [
     ],
   },
   {
-    title: 'Tools',
-    items: [
-      { name: 'templates', label: 'Templates', icon: '📑', route: '/templates' },
-      { name: 'dictionary', label: 'Dictionary', icon: '📖', route: '/dictionary' },
-      { name: 'analytics', label: 'Analytics', icon: '📊', route: '/analytics' },
-    ],
-  },
-  {
     title: 'Account',
     items: [
       { name: 'history', label: 'History', icon: '🕐', route: '/(drawer)/history' },

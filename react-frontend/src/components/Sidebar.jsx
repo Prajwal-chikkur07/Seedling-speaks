@@ -1,5 +1,5 @@
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Globe, User, LogOut, Mic2, Clock, BookmarkPlus, BookOpen, BarChart2, Moon, Sun, ScanText, Ear, Settings, X, Menu, Film } from 'lucide-react';
+import { Globe, User, LogOut, Mic2, Clock, Moon, Sun, ScanText, Ear, Settings, X, Menu, Film } from 'lucide-react';
 import { useClerk } from '@clerk/clerk-react';
 import { useApp } from '../context/AppContext';
 import { getLabels } from '../services/uiLabels';
@@ -76,10 +76,6 @@ export default function Sidebar({ isOpen, onClose, onOpen, topOffset = 0 }) {
           <NavBtn icon={Film}     label="Video Translate"        active={is('/app/video')}             onClick={nav('/app/video')} />
           <SectionLabel label={L.library} />
           <NavBtn icon={Clock}        label={L.history}    active={is('/app/history')}    onClick={nav('/app/history')} />
-          <NavBtn icon={BookmarkPlus} label={L.templates}  active={is('/app/templates')}  onClick={nav('/app/templates')} />
-          <NavBtn icon={BookOpen}     label={L.dictionary} active={is('/app/dictionary')} onClick={nav('/app/dictionary')} />
-          <SectionLabel label={L.insights} />
-          <NavBtn icon={BarChart2} label={L.analytics} active={is('/app/analytics')} onClick={nav('/app/analytics')} />
         </nav>
 
         {/* Bottom */}
@@ -113,7 +109,6 @@ export default function Sidebar({ isOpen, onClose, onOpen, topOffset = 0 }) {
         <BottomNavBtn icon={Ear}       label="Listen"    active={is('/app/continuous')}          onClick={nav('/app/continuous')} />
         <BottomNavBtn icon={Globe}     label="Native"    active={is('/app/english-to-native')}   onClick={nav('/app/english-to-native')} />
         <BottomNavBtn icon={Clock}     label="History"   active={is('/app/history')}             onClick={nav('/app/history')} />
-        <BottomNavBtn icon={BarChart2} label="Analytics" active={is('/app/analytics')}           onClick={nav('/app/analytics')} />
       </nav>
     </>
   );

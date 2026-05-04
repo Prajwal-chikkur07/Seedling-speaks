@@ -16,9 +16,6 @@ import VisionTranslate from './pages/VisionTranslate';
 import VideoTranslate from './pages/VideoTranslate';
 import VideoHistory from './pages/VideoHistory';
 import History from './pages/History';
-import Templates from './pages/Templates';
-import Dictionary from './pages/Dictionary';
-import Analytics from './pages/Analytics';
 import Settings from './pages/Settings';
 import Profile from './pages/Profile';
 import ShareView from './pages/ShareView';
@@ -150,30 +147,6 @@ function AppRoutes() {
         element={
           <ProtectedAppShell>
             <History />
-          </ProtectedAppShell>
-        }
-      />
-      <Route
-        path="/app/templates"
-        element={
-          <ProtectedAppShell>
-            <Templates />
-          </ProtectedAppShell>
-        }
-      />
-      <Route
-        path="/app/dictionary"
-        element={
-          <ProtectedAppShell>
-            <Dictionary />
-          </ProtectedAppShell>
-        }
-      />
-      <Route
-        path="/app/analytics"
-        element={
-          <ProtectedAppShell>
-            <Analytics />
           </ProtectedAppShell>
         }
       />

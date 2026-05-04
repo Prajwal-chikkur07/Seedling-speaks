@@ -65,7 +65,7 @@ export default function Onboarding() {
         {/* Features list on last step */}
         {isLast && (
           <div className="text-left space-y-2 mb-6 bg-gray-50 rounded-2xl p-4">
-            {['Push-to-Talk + Continuous Listening', 'Vision + Video Translate', 'AI tone rewrite for Email, Slack, and LinkedIn', 'History, templates, and dictionary', 'Desktop widget for quick access'].map(f => (
+            {['Push-to-Talk + Continuous Listening', 'Vision + Video Translate', 'AI tone rewrite for Email, Slack, and LinkedIn', 'Translation history and caching', 'Desktop widget for quick access'].map(f => (
               <div key={f} className="flex items-center gap-2 text-[13px] text-gray-600">
                 <Check className="w-3.5 h-3.5 text-green-500 shrink-0" />{f}
               </div>

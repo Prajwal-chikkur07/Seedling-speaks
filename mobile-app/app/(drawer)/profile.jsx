@@ -20,7 +20,7 @@ export default function ProfileScreen() {
   const { openDrawer } = useDrawer();
   const [showLangPicker, setShowLangPicker] = useState(false);
 
-  const { selectedLanguageName, selectedLanguage, transcriptHistory, savedTemplates } = state;
+  const { selectedLanguageName, selectedLanguage, transcriptHistory } = state;
 
   const displayName = user ? [user.firstName, user.lastName].filter(Boolean).join(' ') || 'User' : 'User';
   const displayEmail = user?.primaryEmailAddress?.emailAddress || '';
@@ -57,10 +57,6 @@ export default function ProfileScreen() {
             <Text style={st.statVal}>{transcriptHistory.length}</Text>
             <Text style={st.statLabel}>Transcripts</Text>
           </View>
-          <View style={st.statCard}>
-            <Text style={st.statVal}>{savedTemplates.length}</Text>
-            <Text style={st.statLabel}>Templates</Text>
-          </View>
         </View>
 
         {/* Default Language */}
@@ -82,10 +78,8 @@ export default function ProfileScreen() {
         {/* Quick Links */}
         <Text style={st.sectionTitle}>Quick Links</Text>
         {[
-          { title: 'Settings', icon: '⚙️', route: '/settings' },
-          { title: 'Analytics', icon: '📊', route: '/analytics' },
-          { title: 'Templates', icon: '📑', route: '/templates' },
-          { title: 'Dictionary', icon: '📖', route: '/dictionary' },
+          { title: 'Settings', icon: '⚙️', route: '/(drawer)/settings' },
+          { title: 'History', icon: '🕐', route: '/(drawer)/history' },
         ].map((item) => (
           <TouchableOpacity key={item.title} style={st.linkRow} onPress={() => router.push(item.route)}>
             <Text style={{ fontSize: 18 }}>{item.icon}</Text>
