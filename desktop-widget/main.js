@@ -646,6 +646,27 @@ function createDashboardWindow() {
   dashboardWin.on('closed', () => { dashboardWin = null; });
 }
 
+// ── Bubble window (the floating widget) ──────────────────────────────────────
+function createBubble() {
+  if (bubbleWin && !bubbleWin.isDestroyed()) { bubbleWin.show(); return; }
+  const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize;
+
+  bubbleWin = new BrowserWindow({
+    width: 280, height: 160,
+    x: sw - 300, y: sh - 180,
+    frame: false, transparent: true, alwaysOnTop: true,
+    resizable: false, skipTaskbar: true, hasShadow: false,
+    webPreferences: { nodeIntegration: true, contextIsolation: false },
+  });
+
+  bubbleWin.loadFile('bubble.html');
+  // ── MAKE WIDGET APPEAR ON ALL SCREENS / FULLSCREEN ──
+  bubbleWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  bubbleWin.setAlwaysOnTop(true, 'screen-saver');
+
+  bubbleWin.on('closed', () => { bubbleWin = null; });
+}
+
 // ── Browser-based Auth IPC ──────────────────────────────────────────────────
 ipcMain.on('open-browser-auth', () => {
   // REPLACE THIS with your actual Vercel URL
@@ -657,11 +678,22 @@ ipcMain.on('open-browser-auth', () => {
 ipcMain.handle('get-user-info', () => currentUser);
 ipcMain.handle('get-widget-enabled', () => isBubbleEnabled);
 
+function warmUpBackend() {
+  fetch('https://seedlingspeaks-backend-0vkj.onrender.com/api/health')
+    .then(() => console.log('Backend warmed up successfully'))
+    .catch(err => console.error('Failed to warm up backend:', err));
+}
+
 ipcMain.on('enable-widget', () => {
   isBubbleEnabled = true;
-  if (bubbleWin) bubbleWin.show();
+  if (bubbleWin && !bubbleWin.isDestroyed()) {
+    bubbleWin.show();
+  } else {
+    createBubble();
+  }
   updateTrayMenu();
   if (dashboardWin) dashboardWin.webContents.send('widget-state-changed', true);
+  warmUpBackend(); // Ping Render to wake it up
 });
 
 ipcMain.on('disable-widget', () => {
@@ -702,9 +734,10 @@ app.whenReady().then(() => {
   createToast();
   createScreenOverlay();
 
-  // If user is already authenticated, start widget; otherwise show login
+  // If user is already authenticated, show dashboard; otherwise show login
   if (currentUser) {
-    createBubble();
+    createDashboardWindow();
+    isBubbleEnabled = false; // Wait for toggle from dashboard
   } else {
     isBubbleEnabled = false;
     createLoginWindow();
@@ -876,10 +909,109 @@ ipcMain.on('resize-overlay', (_, { height }) => {
 });
 
 // ── Cancel recording (X button during recording) ──────────────────────────────
-ipcMain.on('cancel-recording', () => {
-  isRecording = false;
-  if (bubbleWin) bubbleWin.webContents.send('recording-state', false);
-  hideOverlay();
+ipcMain.on('open-dashboard', () => {
+  createDashboardWindow();
+});
+
+async function retoneText(text, tone) {
+  try {
+    const response = await fetch('https://seedlingspeaks-backend-0vkj.onrender.com/api/rewrite-tone', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, tone })
+    });
+    if (!response.ok) return text;
+    const data = await response.json();
+    return data.rewritten_text || text;
+  } catch (err) {
+    console.error('Retone error:', err);
+    return text;
+  }
+}
+
+ipcMain.on('process-audio', async (event, audioBuffer) => {
+  const tmpPath = path.join(os.tmpdir(), `rec_${Date.now()}.webm`);
+  fs.writeFileSync(tmpPath, audioBuffer);
+
+  if (bubbleWin) bubbleWin.webContents.send('processing-state', true);
+  showToast({ type: 'loading', message: 'Transcribing with Sarvam AI…' }, 0);
+
+  try {
+    // 1. Send to Sarvam Backend for Transcription/Translation
+    const formData = `file=@${tmpPath}`;
+    const r = spawnSync('curl', [
+      '-s', '-X', 'POST',
+      'https://seedlingspeaks-backend-0vkj.onrender.com/api/translate-audio',
+      '-F', formData
+    ], { encoding: 'utf8', timeout: 60000 });
+
+    if (r.error || r.status !== 0) throw new Error(r.stderr || 'Sarvam request failed');
+    
+    const result = JSON.parse(r.stdout);
+    const nativeTranscript = result.native_transcript || '';
+    const englishTranscript = result.transcript || '';
+
+    if (!englishTranscript) throw new Error('No transcript returned');
+    
+    // ── Log to Database (Native to English) ──────────────────────────
+    let currentSessionId = null;
+    if (currentUser && currentUser.id) {
+      try {
+        const sessionRes = await fetch('https://seedlingspeaks-backend-0vkj.onrender.com/api/native-to-english/session', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            user_id: currentUser.id,
+            original_language: 'auto', // Sarvam auto-detects
+            original_text: nativeTranscript,
+            translated_text: englishTranscript
+          })
+        });
+        if (sessionRes.ok) {
+          const sessionData = await sessionRes.json();
+          currentSessionId = sessionData.session_id;
+
+          await fetch('https://seedlingspeaks-backend-0vkj.onrender.com/api/native-to-english/transcription', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              session_id: currentSessionId,
+              original_transcript: englishTranscript,
+              tone_applied: null,
+              rewritten_text: null,
+              custom_tone_desc: null,
+              confidence_score: null
+            })
+          });
+        }
+      } catch (err) {
+        console.error('Failed to log session:', err);
+      }
+    }
+
+    if (bubbleWin) bubbleWin.webContents.send('processing-done');
+    if (toastWin) toastWin.hide();
+
+    if (!overlayWin) createOverlay();
+    positionOverlay();
+    overlayWin.show();
+    overlayWin.focus();
+    isOverlayOpen = true;
+
+    overlayWin.webContents.send('show-result', { 
+      transcript: englishTranscript,
+      original: englishTranscript,
+      native: nativeTranscript,
+      sessionId: currentSessionId
+    });
+
+  } catch (err) {
+    console.error('Processing error:', err);
+    showToast({ type: 'error', message: `Transcription failed: ${err.message}` }, 5000);
+    if (bubbleWin) bubbleWin.webContents.send('processing-done');
+  } finally {
+    if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+  }
 });
 
 ipcMain.on('recording-result', (_, { transcript }) => {

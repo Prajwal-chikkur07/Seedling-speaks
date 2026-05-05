@@ -1,5 +1,6 @@
 const { ipcRenderer } = require('electron');
 
+// Pointing to local backend to avoid HuggingFace errors on the old Render deployment
 const API_BASE = 'https://seedlingspeaks-backend-0vkj.onrender.com/api';
 
 const ALL_LANGUAGES = {
@@ -123,8 +124,7 @@ function renderResult() {
     </div>
 
     <div class="result-section">
-      <div class="controls-row">
-        <select id="langSel">${langOptions()}</select>
+      <div class="controls-row" style="grid-template-columns: 1fr;">
         <select id="toneSel">${toneOptions()}</select>
       </div>
 
@@ -170,11 +170,6 @@ function bindResultEvents() {
 
   document.getElementById('restartBtn')?.addEventListener('click', () => {
     ipcRenderer.send('bubble-clicked'); // triggers toggleRecording in main
-  });
-
-  document.getElementById('langSel')?.addEventListener('change', e => {
-    selectedLang = e.target.value;
-    if (rawText) translateRaw();
   });
 
   document.getElementById('toneSel')?.addEventListener('change', e => {
@@ -248,6 +243,8 @@ async function translateRaw() {
 }
 
 // ── Tone rewrite ──────────────────────────────────────────────────────────────
+let currentSessionId = null;
+
 async function applyTone(tone) {
   const text = rawText;
   if (!text) return;
@@ -264,6 +261,23 @@ async function applyTone(tone) {
       body:JSON.stringify({text, tone:resolvedTone, user_override: tone==='Custom'?customTone:null}),
     });
     toneText = (await r.json()).rewritten_text || text;
+
+    // ── Log Retone to Database ───────────────────────────────────────────────
+    if (currentSessionId) {
+      fetch(`${API_BASE}/native-to-english/transcription`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_id: currentSessionId,
+          original_transcript: text,
+          tone_applied: resolvedTone,
+          rewritten_text: toneText,
+          custom_tone_desc: tone === 'Custom' ? customTone : null,
+          confidence_score: null
+        })
+      }).catch(err => console.error('Failed to log retone:', err));
+    }
+
   } catch (e) { toneText = `⚠ ${e.message}`; }
   isRewriting = false; render(); fitWindow();
 }
@@ -350,7 +364,7 @@ ipcRenderer.on('cancel-recording', () => {
   ipcRenderer.send('hide-overlay');
 });
 
-ipcRenderer.on('show-result', (_, { transcript }) => {
+ipcRenderer.on('show-result', (_, { transcript, sessionId }) => {
   stopRecTimer();
   stopWaveAnim();
   isRecording = false;
@@ -359,6 +373,7 @@ ipcRenderer.on('show-result', (_, { transcript }) => {
   toneText = '';
   isRewriting = false;
   selectedTone = 'Plain Text';
+  currentSessionId = sessionId;
   selectedLang = '';
   render();
   fitWindow();
