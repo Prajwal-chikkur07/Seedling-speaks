@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>SeedlingSpeaks — Dashboard</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,500;0,9..144,600;1,9..144,400&family=DM+Sans:wght@300;400;500;600&display=swap');
+
+    :root {
+      --bg: #FAF8F4;
+      --surface: #FDFAF4;
+      --ink: #1a0f00;
+      --saffron: #E8820C;
+      --saffron-light: #FDF0E0;
+      --gold: #c9a84c;
+      --muted: #8C7B6B;
+      --faded: #B8A898;
+      --border: rgba(90,70,50,0.12);
+      --border-warm: rgba(90,70,50,0.20);
+      --green: #2D6A4F;
+      --green-bg: #EAF4EE;
+      --red: #C0392B;
+      --red-bg: #FDECEC;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'DM Sans', -apple-system, sans-serif;
+      background: var(--bg);
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* ── Header ── */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 24px;
+      border-bottom: 1px solid var(--border);
+    }
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .header-icon {
+      width: 28px; height: 28px; border-radius: 50%;
+      background: var(--saffron);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 14px;
+    }
+    .header-title {
+      font-family: 'Fraunces', serif;
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--ink);
+    }
+    .sign-out-btn {
+      background: none;
+      border: 1px solid var(--border-warm);
+      border-radius: 8px;
+      padding: 6px 14px;
+      font-family: 'DM Sans', sans-serif;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--muted);
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .sign-out-btn:hover {
+      border-color: var(--red);
+      color: var(--red);
+      background: var(--red-bg);
+    }
+
+    /* ── Content ── */
+    .content {
+      padding: 24px;
+    }
+
+    /* ── User card ── */
+    .user-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 20px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 20px;
+    }
+    .user-avatar {
+      width: 44px; height: 44px; border-radius: 50%;
+      background: var(--saffron-light);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px; font-weight: 700;
+      color: var(--saffron);
+      flex-shrink: 0;
+    }
+    .user-info { flex: 1; min-width: 0; }
+    .user-name {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--ink);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .user-email {
+      font-size: 12px;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* ── Widget Toggle ── */
+    .toggle-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .toggle-label-area {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .toggle-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--ink);
+    }
+    .toggle-desc {
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    /* Toggle switch */
+    .toggle-switch {
+      position: relative;
+      width: 48px;
+      height: 26px;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .toggle-switch input {
+      opacity: 0;
+      width: 0; height: 0;
+    }
+    .toggle-slider {
+      position: absolute;
+      inset: 0;
+      background: var(--faded);
+      border-radius: 26px;
+      transition: all 0.3s;
+    }
+    .toggle-slider::before {
+      content: '';
+      position: absolute;
+      width: 20px; height: 20px;
+      border-radius: 50%;
+      background: #fff;
+      left: 3px; top: 3px;
+      transition: all 0.3s;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    }
+    .toggle-switch input:checked + .toggle-slider {
+      background: var(--green);
+    }
+    .toggle-switch input:checked + .toggle-slider::before {
+      transform: translateX(22px);
+    }
+
+    /* ── Status indicator ── */
+    .status-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 16px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .status-bar.active {
+      background: var(--green-bg);
+      color: var(--green);
+    }
+    .status-bar.inactive {
+      background: var(--red-bg);
+      color: var(--red);
+    }
+    .status-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .status-bar.active .status-dot { background: var(--green); }
+    .status-bar.inactive .status-dot { background: var(--red); }
+
+    /* ── Info text ── */
+    .info-text {
+      font-size: 11px;
+      color: var(--faded);
+      text-align: center;
+      margin-top: 20px;
+      line-height: 1.5;
+    }
+    .info-text kbd {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 1px 5px;
+      font-family: 'DM Sans', sans-serif;
+      font-size: 10px;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Header -->
+  <div class="header">
+    <div class="header-left">
+      <img src="icon.png" class="header-icon" style="background: white; padding: 2px;">
+      <span class="header-title">SeedlingSpeaks</span>
+    </div>
+    <button class="sign-out-btn" id="signOutBtn">Sign Out</button>
+  </div>
+
+  <!-- Content -->
+  <div class="content">
+    <!-- User Card -->
+    <div class="user-card">
+      <div class="user-avatar" id="userAvatar">?</div>
+      <div class="user-info">
+        <div class="user-name" id="userName">—</div>
+        <div class="user-email" id="userEmail">—</div>
+      </div>
+    </div>
+
+    <!-- Widget Toggle -->
+    <div class="toggle-card">
+      <div class="toggle-row">
+        <div class="toggle-label-area">
+          <span class="toggle-title">Floating Widget</span>
+          <span class="toggle-desc">Show the push-to-talk bubble on screen</span>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" id="widgetToggle" checked>
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+    </div>
+
+    <!-- Status -->
+    <div class="status-bar active" id="statusBar">
+      <div class="status-dot"></div>
+      <span id="statusText">Widget is active — hold <kbd>fn</kbd> to speak</span>
+    </div>
+
+    <p class="info-text">
+      The widget floats on top of all apps.<br>
+      Hold <kbd>fn</kbd> or click the bubble to record.<br>
+      Right-click the bubble for more options.
+    </p>
+  </div>
+
+  <script>
+    const { ipcRenderer } = require('electron');
+
+    const widgetToggle = document.getElementById('widgetToggle');
+    const statusBar = document.getElementById('statusBar');
+    const statusText = document.getElementById('statusText');
+    const signOutBtn = document.getElementById('signOutBtn');
+    const userAvatar = document.getElementById('userAvatar');
+    const userName = document.getElementById('userName');
+    const userEmail = document.getElementById('userEmail');
+
+    // Load user info
+    ipcRenderer.invoke('get-user-info').then(user => {
+      if (user) {
+        userName.textContent = [user.firstName, user.lastName].filter(Boolean).join(' ') || user.email;
+        userEmail.textContent = user.email || '';
+        const initials = (user.firstName?.[0] || '') + (user.lastName?.[0] || '');
+        userAvatar.textContent = initials.toUpperCase() || user.email?.[0]?.toUpperCase() || '?';
+      }
+    });
+
+    // Load widget state
+    ipcRenderer.invoke('get-widget-enabled').then(enabled => {
+      widgetToggle.checked = enabled;
+      updateStatus(enabled);
+    });
+
+    // Toggle widget
+    widgetToggle.addEventListener('change', () => {
+      const enabled = widgetToggle.checked;
+      ipcRenderer.send(enabled ? 'enable-widget' : 'disable-widget');
+      updateStatus(enabled);
+    });
+
+    function updateStatus(enabled) {
+      if (enabled) {
+        statusBar.className = 'status-bar active';
+        statusText.innerHTML = 'Widget is active — hold <kbd>fn</kbd> to speak';
+      } else {
+        statusBar.className = 'status-bar inactive';
+        statusText.innerHTML = 'Widget is disabled';
+      }
+    }
+
+    // Sign out
+    signOutBtn.addEventListener('click', () => {
+      ipcRenderer.send('sign-out');
+    });
+
+    // Listen for state changes from tray
+    ipcRenderer.on('widget-state-changed', (_, enabled) => {
+      widgetToggle.checked = enabled;
+      updateStatus(enabled);
+    });
+  </script>
+</body>
+</html>

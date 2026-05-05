@@ -16,17 +16,17 @@ npm run build
 cd mobile-app
 npx expo start
 
-> Desktop Widget (dev mode)
+> Desktop Widget (Development)
 cd desktop-widget
 npm install
 npm start
 
-> Desktop Widget (build installable DMG)
+> Desktop Widget (Build Production DMG)
 cd desktop-widget
 npm install
 npm run dist
 
-After the build completes, find the .dmg file in `desktop-widget/dist/`.
+Once finished, the `.dmg` installer will be in `desktop-widget/dist/`.
 Double-click the DMG → drag SeedlingSpeaks Widget to Applications.
 The widget auto-enables on launch — no web app needed.
 

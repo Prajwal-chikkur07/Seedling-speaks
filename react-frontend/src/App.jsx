@@ -4,6 +4,7 @@ import { AppProvider, useApp } from './context/AppContext';
 import AppShellLayout from './layout/AppShell';
 import SplashScreen from './components/SplashScreen';
 import AuthPage from './pages/AuthPage';
+import DesktopAuth from './pages/DesktopAuth';
 import LandingPage from './pages/LandingPage';
 import WidgetSetup from './pages/WidgetSetup';
 
@@ -69,6 +70,7 @@ function AppRoutes() {
       <Route path="/" element={<SplashScreen />} />
       <Route path="/landing" element={<LandingPage />} />
       <Route path="/auth" element={<AuthPage />} />
+      <Route path="/desktop-auth" element={<DesktopAuth />} />
       <Route path="/splash" element={<SplashScreen />} />
 
       {/* Widget setup — auth required, setup not done */}

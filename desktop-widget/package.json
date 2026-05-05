@@ -38,6 +38,8 @@
       "overlay.js",
       "overlay.html",
       "bubble.html",
+      "login.html",
+      "dashboard.html",
       "toast.html",
       "screen-overlay.html",
       "region-select.html",

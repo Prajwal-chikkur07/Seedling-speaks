@@ -1,4 +1,4 @@
-const { app, BrowserWindow, globalShortcut, ipcMain, screen } = require('electron');
+const { app, BrowserWindow, globalShortcut, ipcMain, screen, shell } = require('electron');
 const http = require('http');
 const { spawnSync } = require('child_process');
 const os = require('os');
@@ -11,11 +11,42 @@ let tray = null; // Menu bar tray
 let toastWin = null;
 let screenOverlayWin = null;
 let regionSelectWin = null;
+let loginWin = null;
+let dashboardWin = null;
 let isOverlayOpen = false;
 let isBubbleEnabled = true; // auto-enabled — no web app needed
 let toastTimer = null;
 let isClickModeActive = false;
 let clickModeLang = 'hi-IN';
+
+// ── Auth state ────────────────────────────────────────────────────────────────
+const CLERK_PUBLISHABLE_KEY = 'pk_test_dW5pdGVkLW1vY2Nhc2luLTM5LmNsZXJrLmFjY291bnRzLmRldiQ';
+let currentUser = null; // { clerkId, email, firstName, lastName }
+let AUTH_FILE = path.join(os.homedir(), '.seedlingspeaks-auth.json');
+
+function loadAuth() {
+  try {
+    try { AUTH_FILE = path.join(app.getPath('userData'), 'auth.json'); } catch { }
+    if (fs.existsSync(AUTH_FILE)) {
+      const saved = JSON.parse(fs.readFileSync(AUTH_FILE, 'utf8'));
+      if (saved && saved.clerkId) {
+        currentUser = saved;
+        return true;
+      }
+    }
+  } catch { }
+  return false;
+}
+
+function saveAuth(user) {
+  currentUser = user;
+  try { fs.writeFileSync(AUTH_FILE, JSON.stringify(user), 'utf8'); } catch { }
+}
+
+function clearAuth() {
+  currentUser = null;
+  try { if (fs.existsSync(AUTH_FILE)) fs.unlinkSync(AUTH_FILE); } catch { }
+}
 
 // ── Recording state (managed in main process) ─────────────────────────────────
 let isRecording = false;
@@ -30,18 +61,18 @@ let CONFIG_FILE = path.join(os.homedir(), '.seedlingspeaks-widget-config.json');
 function loadWidgetConfig() {
   try {
     // Resolve to userData path once app is ready
-    try { CONFIG_FILE = path.join(app.getPath('userData'), 'widget-config.json'); } catch {}
+    try { CONFIG_FILE = path.join(app.getPath('userData'), 'widget-config.json'); } catch { }
     if (fs.existsSync(CONFIG_FILE)) {
       const saved = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
       if (saved && Array.isArray(saved.languages) && saved.languages.length > 0) {
         widgetConfig = { mode: 'nativeToEnglish', languages: saved.languages };
       }
     }
-  } catch {}
+  } catch { }
 }
 
 function saveWidgetConfig() {
-  try { fs.writeFileSync(CONFIG_FILE, JSON.stringify(widgetConfig), 'utf8'); } catch {}
+  try { fs.writeFileSync(CONFIG_FILE, JSON.stringify(widgetConfig), 'utf8'); } catch { }
 }
 
 // ── Control server ────────────────────────────────────────────────────────────
@@ -49,8 +80,14 @@ function startControlServer() {
   const server = http.createServer((req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    if (req.method === 'OPTIONS') { res.writeHead(200); res.end(); return; }
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+    if (req.method === 'OPTIONS') {
+      res.writeHead(200);
+      res.end();
+      return;
+    }
+
     res.setHeader('Content-Type', 'application/json');
 
     if (req.url === '/status') {
@@ -85,6 +122,32 @@ function startControlServer() {
       if (isBubbleEnabled) { if (bubbleWin) bubbleWin.show(); }
       else { if (bubbleWin) bubbleWin.hide(); hideOverlay(); }
       res.writeHead(200); res.end(JSON.stringify({ enabled: isBubbleEnabled }));
+    } else if (req.url === '/auth-callback' && req.method === 'POST') {
+      // ── Received login data from browser ───────────────────────────────────
+      let body = '';
+      req.on('data', c => body += c);
+      req.on('end', () => {
+        try {
+          const userData = JSON.parse(body);
+          if (userData && userData.id) {
+            const user = {
+              clerkId: userData.id,
+              email: userData.email,
+              firstName: userData.firstName || '',
+              lastName: userData.lastName || '',
+              token: userData.token
+            };
+            saveAuth(user);
+            onAuthSuccess();
+            res.writeHead(200); res.end(JSON.stringify({ status: 'ok' }));
+          } else {
+            res.writeHead(400); res.end(JSON.stringify({ error: 'invalid user data' }));
+          }
+        } catch (e) {
+          res.writeHead(400); res.end(JSON.stringify({ error: 'bad payload' }));
+        }
+      });
+      return;
     } else {
       res.writeHead(404); res.end(JSON.stringify({ error: 'not found' }));
     }
@@ -111,20 +174,49 @@ function createTray() {
 
 function updateTrayMenu() {
   const { Menu } = require('electron');
-  const contextMenu = Menu.buildFromTemplate([
+  const items = [
     { label: 'SeedlingSpeaks Widget', enabled: false },
     { type: 'separator' },
-    { 
-      label: 'Enable Floating Widget', 
-      type: 'checkbox', 
-      checked: isBubbleEnabled,
-      click: () => toggleWidgetState()
-    },
-    { type: 'separator' },
-    { label: 'Open Settings', click: () => showOverlay('nativeToEnglish') },
+  ];
+
+  if (currentUser) {
+    items.push(
+      { label: `Signed in as ${currentUser.email || 'User'}`, enabled: false },
+      { type: 'separator' },
+      { label: 'Dashboard', click: () => createDashboardWindow() },
+      {
+        label: 'Enable Floating Widget',
+        type: 'checkbox',
+        checked: isBubbleEnabled,
+        click: () => toggleWidgetState()
+      },
+      { type: 'separator' },
+      { label: 'Open Settings', click: () => showOverlay('nativeToEnglish') },
+      { type: 'separator' },
+      {
+        label: 'Sign Out', click: () => {
+          clearAuth();
+          isBubbleEnabled = false;
+          if (bubbleWin) bubbleWin.hide();
+          hideOverlay();
+          if (dashboardWin && !dashboardWin.isDestroyed()) dashboardWin.close();
+          createLoginWindow();
+          updateTrayMenu();
+        }
+      },
+    );
+  } else {
+    items.push(
+      { label: 'Sign In', click: () => createLoginWindow() },
+    );
+  }
+
+  items.push(
     { type: 'separator' },
     { label: 'Quit', click: () => app.quit() }
-  ]);
+  );
+
+  const contextMenu = Menu.buildFromTemplate(items);
   tray.setContextMenu(contextMenu);
 }
 
@@ -163,7 +255,7 @@ async function captureScreen() {
     throw new Error('screencapture failed: ' + (r.stderr || r.error?.message || 'unknown'));
   }
   const buf = fs.readFileSync(tmpFile);
-  try { fs.unlinkSync(tmpFile); } catch {}
+  try { fs.unlinkSync(tmpFile); } catch { }
   return buf;
 }
 
@@ -429,7 +521,7 @@ function clearScreenOverlay() {
 let regionSelectorTimeout = null;
 
 function openRegionSelector(lang) {
-  if (regionSelectWin) { try { regionSelectWin.close(); } catch {} regionSelectWin = null; }
+  if (regionSelectWin) { try { regionSelectWin.close(); } catch { } regionSelectWin = null; }
   if (regionSelectorTimeout) { clearTimeout(regionSelectorTimeout); regionSelectorTimeout = null; }
 
   const { bounds } = screen.getPrimaryDisplay();
@@ -464,7 +556,7 @@ function openRegionSelector(lang) {
 function closeRegionSelector() {
   if (regionSelectorTimeout) { clearTimeout(regionSelectorTimeout); regionSelectorTimeout = null; }
   if (regionSelectWin) {
-    try { regionSelectWin.close(); } catch {}
+    try { regionSelectWin.close(); } catch { }
     regionSelectWin = null;
   }
 }
@@ -519,18 +611,104 @@ function checkScreenPermission() {
     encoding: 'utf8', timeout: 5000,
   });
   const ok = !r.error && fs.existsSync(testFile);
-  try { if (ok) fs.unlinkSync(testFile); } catch {}
+  try { if (ok) fs.unlinkSync(testFile); } catch { }
   return ok;
+}
+
+// ── Login window ──────────────────────────────────────────────────────────────
+function createLoginWindow() {
+  if (loginWin && !loginWin.isDestroyed()) { loginWin.focus(); return; }
+  loginWin = new BrowserWindow({
+    width: 700, height: 520,
+    resizable: false,
+    titleBarStyle: 'hiddenInset',
+    backgroundColor: '#FAF8F4',
+    webPreferences: {
+      nodeIntegration: true,
+      contextIsolation: false,
+    },
+  });
+  loginWin.loadFile(path.join(__dirname, 'login.html'));
+  loginWin.on('closed', () => { loginWin = null; });
+}
+
+// ── Dashboard window ─────────────────────────────────────────────────────────
+function createDashboardWindow() {
+  if (dashboardWin && !dashboardWin.isDestroyed()) { dashboardWin.focus(); return; }
+  dashboardWin = new BrowserWindow({
+    width: 420, height: 440,
+    resizable: false,
+    titleBarStyle: 'hiddenInset',
+    backgroundColor: '#FAF8F4',
+    webPreferences: { nodeIntegration: true, contextIsolation: false },
+  });
+  dashboardWin.loadFile(path.join(__dirname, 'dashboard.html'));
+  dashboardWin.on('closed', () => { dashboardWin = null; });
+}
+
+// ── Browser-based Auth IPC ──────────────────────────────────────────────────
+ipcMain.on('open-browser-auth', () => {
+  // REPLACE THIS with your actual Vercel URL
+  const VERCEL_URL = 'https://seedlingspeaks.vercel.app';
+  const authUrl = `${VERCEL_URL}/desktop-auth?port=27182`;
+  shell.openExternal(authUrl);
+});
+
+ipcMain.handle('get-user-info', () => currentUser);
+ipcMain.handle('get-widget-enabled', () => isBubbleEnabled);
+
+ipcMain.on('enable-widget', () => {
+  isBubbleEnabled = true;
+  if (bubbleWin) bubbleWin.show();
+  updateTrayMenu();
+  if (dashboardWin) dashboardWin.webContents.send('widget-state-changed', true);
+});
+
+ipcMain.on('disable-widget', () => {
+  isBubbleEnabled = false;
+  if (bubbleWin) bubbleWin.hide();
+  hideOverlay();
+  updateTrayMenu();
+  if (dashboardWin) dashboardWin.webContents.send('widget-state-changed', false);
+});
+
+ipcMain.on('sign-out', () => {
+  clearAuth();
+  isBubbleEnabled = false;
+  if (bubbleWin) bubbleWin.hide();
+  hideOverlay();
+  if (dashboardWin && !dashboardWin.isDestroyed()) dashboardWin.close();
+  createLoginWindow();
+  updateTrayMenu();
+});
+
+// Called after successful login
+function onAuthSuccess() {
+  if (loginWin && !loginWin.isDestroyed()) loginWin.close();
+  createDashboardWindow();
+  // Start the widget
+  isBubbleEnabled = true;
+  if (bubbleWin) bubbleWin.show();
+  else createBubble();
+  updateTrayMenu();
 }
 
 // ── App ready ─────────────────────────────────────────────────────────────────
 app.whenReady().then(() => {
+  loadAuth();
   startControlServer();
   createTray();
-  createBubble();
   createOverlay();
   createToast();
   createScreenOverlay();
+
+  // If user is already authenticated, start widget; otherwise show login
+  if (currentUser) {
+    createBubble();
+  } else {
+    isBubbleEnabled = false;
+    createLoginWindow();
+  }
 
   // ── fn key push-to-talk via native IOHIDManager watcher ──────────────────
   const { spawn } = require('child_process');
@@ -605,7 +783,7 @@ app.whenReady().then(() => {
       }
     });
 
-    app.on('will-quit', () => { try { fnProc.kill(); } catch {} });
+    app.on('will-quit', () => { try { fnProc.kill(); } catch { } });
     console.log('[shortcut] fn key push-to-talk active via IOHIDManager');
 
   } catch (e) {
@@ -650,7 +828,7 @@ app.whenReady().then(() => {
 app.on('window-all-closed', e => e.preventDefault());
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
-  try { require('uiohook-napi').uIOhook.stop(); } catch {}
+  try { require('uiohook-napi').uIOhook.stop(); } catch { }
 });
 
 // ── IPC ───────────────────────────────────────────────────────────────────────
@@ -767,7 +945,7 @@ ipcMain.on('action-translate-screen', async (_, { lang, mode }) => {
     showToast({ type: 'loading', message: 'Translating screen text…' }, 0);
 
     const data = visionTranslate(tmpImg, tgtLang);
-    try { fs.unlinkSync(tmpImg); } catch {}
+    try { fs.unlinkSync(tmpImg); } catch { }
 
     const regions = data.regions || [];
     if (regions.length === 0) {
@@ -811,11 +989,11 @@ ipcMain.on('region-selected', async (_, { x, y, w, h, lang }) => {
     fs.writeFileSync(tmpImg, pngBuf);
 
     const croppedPath = cropPng(tmpImg, x, y, w, h);
-    try { fs.unlinkSync(tmpImg); } catch {}
+    try { fs.unlinkSync(tmpImg); } catch { }
 
     const imgToSend = croppedPath || tmpImg;
     const data = visionTranslate(imgToSend, lang);
-    if (croppedPath) try { fs.unlinkSync(croppedPath); } catch {}
+    if (croppedPath) try { fs.unlinkSync(croppedPath); } catch { }
 
     const regions = data.regions || [];
     if (regions.length === 0) {
@@ -847,7 +1025,7 @@ ipcMain.on('region-cancelled', () => {
 let clickOverlayWin = null;
 
 function openClickOverlay(lang) {
-  if (clickOverlayWin) { try { clickOverlayWin.close(); } catch {} clickOverlayWin = null; }
+  if (clickOverlayWin) { try { clickOverlayWin.close(); } catch { } clickOverlayWin = null; }
 
   const { bounds } = screen.getPrimaryDisplay();
   clickOverlayWin = new BrowserWindow({
@@ -875,7 +1053,7 @@ function openClickOverlay(lang) {
 }
 
 function closeClickOverlay() {
-  if (clickOverlayWin) { try { clickOverlayWin.close(); } catch {} clickOverlayWin = null; }
+  if (clickOverlayWin) { try { clickOverlayWin.close(); } catch { } clickOverlayWin = null; }
 }
 
 ipcMain.on('action-click-mode', (_, { lang, mode }) => {
@@ -951,11 +1129,11 @@ ipcMain.on('click-translate', async (_, { x, y, lang }) => {
     fs.writeFileSync(tmpImg, pngBuf);
 
     const croppedPath = cropPng(tmpImg, rx, ry, REGION_W, REGION_H);
-    try { fs.unlinkSync(tmpImg); } catch {}
+    try { fs.unlinkSync(tmpImg); } catch { }
 
     const imgToSend = croppedPath || tmpImg;
     const data = visionTranslate(imgToSend, lang);
-    if (croppedPath) try { fs.unlinkSync(croppedPath); } catch {}
+    if (croppedPath) try { fs.unlinkSync(croppedPath); } catch { }
 
     if (clickOverlayWin) {
       clickOverlayWin.show();
@@ -1003,11 +1181,11 @@ ipcMain.on('stop-screen-mode', () => {
 ipcMain.on('get-active-url', (event) => {
   // 1. Try to get URL from frontmost browser via AppleScript
   const browsers = [
-    { name: 'Google Chrome',  script: `tell application "Google Chrome" to get URL of active tab of front window` },
-    { name: 'Safari',         script: `tell application "Safari" to get URL of current tab of front window` },
+    { name: 'Google Chrome', script: `tell application "Google Chrome" to get URL of active tab of front window` },
+    { name: 'Safari', script: `tell application "Safari" to get URL of current tab of front window` },
     { name: 'Microsoft Edge', script: `tell application "Microsoft Edge" to get URL of active tab of front window` },
-    { name: 'Brave Browser',  script: `tell application "Brave Browser" to get URL of active tab of front window` },
-    { name: 'Firefox',        script: `tell application "Firefox" to get URL of active tab of front window` },
+    { name: 'Brave Browser', script: `tell application "Brave Browser" to get URL of active tab of front window` },
+    { name: 'Firefox', script: `tell application "Firefox" to get URL of active tab of front window` },
   ];
 
   let url = null;
@@ -1040,14 +1218,14 @@ ipcMain.on('smart-send', (_, { text, subject, body }) => {
   console.log('[smart-send] stored url:', url, 'app:', appName);
 
   let target = 'fallback';
-  if (url.includes('mail.google.com'))                                          target = 'gmail';
-  else if (url.includes('slack.com'))                                           target = 'slack';
-  else if (url.includes('web.whatsapp.com'))                                    target = 'whatsapp';
-  else if (url.includes('linkedin.com'))                                        target = 'linkedin';
+  if (url.includes('mail.google.com')) target = 'gmail';
+  else if (url.includes('slack.com')) target = 'slack';
+  else if (url.includes('web.whatsapp.com')) target = 'whatsapp';
+  else if (url.includes('linkedin.com')) target = 'linkedin';
   else if (url.includes('outlook.live.com') || url.includes('outlook.office')) target = 'outlook';
-  else if (appName.includes('slack'))                                           target = 'slack';
-  else if (appName.includes('whatsapp'))                                        target = 'whatsapp';
-  else if (appName.includes('mail') && !appName.includes('gmail'))              target = 'applemail';
+  else if (appName.includes('slack')) target = 'slack';
+  else if (appName.includes('whatsapp')) target = 'whatsapp';
+  else if (appName.includes('mail') && !appName.includes('gmail')) target = 'applemail';
 
   console.log('[smart-send] target:', target);
 
