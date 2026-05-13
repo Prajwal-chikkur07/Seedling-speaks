@@ -1,7 +1,7 @@
 const { ipcRenderer } = require('electron');
 
 // Pointing to local backend to avoid HuggingFace errors on the old Render deployment
-const API_BASE = 'https://seedlingspeaks-backend-0vkj.onrender.com/api';
+const API_BASE = 'http://127.0.0.1:8001/api';
 
 const ALL_LANGUAGES = {
   'hi-IN':'Hindi','bn-IN':'Bengali','ta-IN':'Tamil','te-IN':'Telugu',

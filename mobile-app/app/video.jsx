@@ -66,7 +66,7 @@ export default function VideoScreen() {
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
           } else if (status.status === 'error') {
             clearInterval(pollRef.current);
-            showError(status.error || 'Video translation failed');
+            showError(status.error || 'Video subtitles failed');
             setStep(1);
           }
         } catch { /* continue polling */ }
@@ -92,7 +92,7 @@ export default function VideoScreen() {
         <TouchableOpacity onPress={() => router.back()}>
           <Text style={st.backBtn}>← Back</Text>
         </TouchableOpacity>
-        <Text style={st.headerTitle}>Video Translate</Text>
+        <Text style={st.headerTitle}>Video Subtitles</Text>
         <View style={{ width: 50 }} />
       </View>
 

@@ -47,6 +47,7 @@ let currentAudio = null;
 let playingType = null;
 let loadingMessage = null;
 let _lastRange = null;
+let lastFocusedEditable = null;
 
 const TONES = ['Email Formal', 'Email Casual', 'Slack', 'LinkedIn', 'WhatsApp Business', 'User Override'];
 const TARGET_LANGUAGES = {
@@ -87,6 +88,16 @@ if (isContextValid()) {
       }
     }
   });
+
+  // Track the last focused editable element outside the extension panel
+  document.addEventListener('focusin', (e) => {
+    const el = e.target;
+    if (!el) return;
+    if (el.closest('#vt-popup-panel') || el.closest('#seedling-widget')) return;
+    if (el.isContentEditable || el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+      lastFocusedEditable = el;
+    }
+  }, true);
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'GET_SELECTION') { sendResponse({ text: getSmartSelection() }); return false; }
@@ -1559,7 +1570,6 @@ function insertTextIntoActive(text) {
 
   // ── Gmail ──────────────────────────────────────────────────────────────────
   if (host.includes('mail.google.com')) {
-    // Find the compose body — try multiple selectors, pick the one inside the compose window
     const gmailBody =
       document.querySelector('div[aria-label="Message Body"][contenteditable="true"]') ||
       document.querySelector('div[g_editable="true"][contenteditable="true"]') ||
@@ -1569,40 +1579,59 @@ function insertTextIntoActive(text) {
         .find(el => !el.closest('#vt-popup-panel') && el.getBoundingClientRect().height > 80);
 
     if (gmailBody) {
-      // Parse "Subject: ..." from the text
-      let subject = '';
-      let body = text;
+      // Normalize line endings and trim before parsing
+      const normalised = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
 
-      const subjectMatch = text.match(/^Subject:\s*(.+?)[\r\n]+/i);
+      // Match "Subject: ..." at start of text (with optional leading whitespace)
+      let subject = '';
+      let body = normalised;
+      const subjectMatch = normalised.match(/^Subject:\s*(.+?)(?:\n|$)/i);
       if (subjectMatch) {
         subject = subjectMatch[1].trim();
-        body = text.slice(subjectMatch[0].length).trim();
+        body = normalised.slice(subjectMatch[0].length).trim();
       }
 
-      // Fill subject field
+      // Helper: fill a native input element (bypasses React/Angular value traps)
+      function fillInput(el, val) {
+        el.focus();
+        const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        nativeSetter.call(el, val);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        el.blur();
+      }
+
+      // Fill subject first, then body after a short delay
       if (subject) {
         const subjectEl =
           document.querySelector('input[name="subjectbox"]') ||
           document.querySelector('input[placeholder="Subject"]') ||
-          document.querySelector('input[data-hm="subject"]') ||
+          document.querySelector('input[aria-label="Subject"]') ||
           document.querySelector('td.aoD.hl input') ||
           document.querySelector('.aoT');
-        if (subjectEl) {
-          subjectEl.focus();
-          const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-          nativeSetter.call(subjectEl, subject);
-          subjectEl.dispatchEvent(new Event('input', { bubbles: true }));
-          subjectEl.dispatchEvent(new Event('change', { bubbles: true }));
-        }
+        if (subjectEl) fillInput(subjectEl, subject);
       }
 
-      // Fill body after a short delay so subject fill settles
+      // Fill body with a small delay so subject is committed first
       setTimeout(() => {
         gmailBody.focus();
+        // Clear existing content first
         document.execCommand('selectAll', false, null);
         document.execCommand('insertText', false, body);
-        gmailBody.dispatchEvent(new InputEvent('input', { bubbles: true }));
-      }, 80);
+        // Verify; if empty fall back to clipboard paste
+        setTimeout(() => {
+          const current = (gmailBody.innerText || gmailBody.textContent || '').trim();
+          if (!current) {
+            navigator.clipboard.writeText(body).then(() => {
+              gmailBody.focus();
+              document.execCommand('selectAll', false, null);
+              document.execCommand('paste');
+            });
+          } else {
+            gmailBody.dispatchEvent(new InputEvent('input', { bubbles: true }));
+          }
+        }, 80);
+      }, 120);
 
       showToast(subject ? '✓ Filled subject + body' : '✓ Filled Gmail compose');
       return true;
@@ -1611,14 +1640,38 @@ function insertTextIntoActive(text) {
 
   // ── Slack Web ──────────────────────────────────────────────────────────────
   if (host.includes('slack.com') || host.includes('app.slack.com')) {
-    const slackInput = document.querySelector(
-      '[data-qa="message_input"] [contenteditable="true"], ' +
-      '.ql-editor[contenteditable="true"], ' +
-      'div[aria-label="Message"][contenteditable="true"], ' +
-      'div[data-qa="message-input"][contenteditable="true"]'
-    );
+    const slackInput =
+      document.querySelector('[data-qa="message_input"] div[contenteditable="true"]') ||
+      document.querySelector('[data-qa="message_input"] .p-rich_text_input') ||
+      document.querySelector('div.p-message_input__input [contenteditable="true"]') ||
+      document.querySelector('div.p-rich_text_input[contenteditable="true"]') ||
+      document.querySelector('div[aria-label^="Message"][contenteditable="true"]') ||
+      document.querySelector('div[aria-placeholder][contenteditable="true"]') ||
+      document.querySelector('.ql-editor[contenteditable="true"]') ||
+      document.querySelector('div[contenteditable="true"][role="textbox"]') ||
+      [...document.querySelectorAll('div[contenteditable="true"]')]
+        .find(el => {
+          if (el.closest('#vt-popup-panel')) return false;
+          const r = el.getBoundingClientRect();
+          return r.bottom > window.innerHeight - 200 && r.width > 200;
+        });
+
     if (slackInput) {
-      _injectIntoContentEditable(slackInput, text);
+      navigator.clipboard.writeText(text).then(() => {
+        slackInput.focus();
+        document.execCommand('selectAll', false, null);
+        document.execCommand('insertText', false, text);
+        setTimeout(() => {
+          const val = (slackInput.innerText || slackInput.textContent || '').trim();
+          if (!val || val.length < 2) {
+            slackInput.focus();
+            document.execCommand('paste');
+          }
+        }, 80);
+        slackInput.dispatchEvent(new InputEvent('input', { bubbles: true }));
+      }).catch(() => {
+        _injectIntoContentEditable(slackInput, text);
+      });
       showToast('✓ Filled Slack message');
       return true;
     }
@@ -1642,17 +1695,90 @@ function insertTextIntoActive(text) {
 
   // ── LinkedIn ───────────────────────────────────────────────────────────────
   if (host.includes('linkedin.com')) {
-    // LinkedIn message compose or post box
-    const liInput = document.querySelector(
-      'div.msg-form__contenteditable[contenteditable="true"], ' +
-      'div[data-placeholder][contenteditable="true"], ' +
-      'div.ql-editor[contenteditable="true"], ' +
-      'div[role="textbox"][contenteditable="true"], ' +
-      'div.share-creation-state__text-editor [contenteditable="true"]'
-    );
+    // Priority order of selectors — modal dialog first, then page-level
+    const liSelectors = [
+      // Post creation modal (Quill editor)
+      'div[role="dialog"] .ql-editor[contenteditable="true"]',
+      'div[role="dialog"] div[contenteditable="true"]',
+      // Data-placeholder variants
+      'div[contenteditable="true"][data-placeholder]',
+      // Named selectors
+      '.share-creation-state .ql-editor[contenteditable="true"]',
+      '.editor-container .ql-editor[contenteditable="true"]',
+      'div.ql-editor[contenteditable="true"]',
+      'div[aria-label="Text editor for creating content"]',
+      'div[data-placeholder="What do you want to talk about?"]',
+      'div.msg-form__contenteditable[contenteditable="true"]',
+      'div[role="textbox"][contenteditable="true"]',
+    ];
+
+    let liInput = null;
+    for (const sel of liSelectors) {
+      const el = document.querySelector(sel);
+      if (el && !el.closest('#vt-popup-panel') && !el.closest('#seedling-widget')) {
+        const r = el.getBoundingClientRect();
+        if (r.width > 50) { liInput = el; break; }
+      }
+    }
+
+    // Final fallback: any visible contenteditable not in our panel
+    if (!liInput) {
+      liInput = [...document.querySelectorAll('div[contenteditable="true"]')]
+        .find(el => {
+          if (el.closest('#vt-popup-panel') || el.closest('#seedling-widget')) return false;
+          const r = el.getBoundingClientRect();
+          return r.width > 100 && r.height > 30 && r.top >= 0;
+        });
+    }
+
     if (liInput) {
-      _injectIntoContentEditable(liInput, text);
-      showToast('✓ Filled LinkedIn compose');
+      // Use clipboard paste — most reliable for Quill-based editors
+      navigator.clipboard.writeText(text).then(() => {
+        liInput.focus();
+        // Select all existing content and replace
+        const sel = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(liInput);
+        sel.removeAllRanges();
+        sel.addRange(range);
+        document.execCommand('insertText', false, text);
+        // Verify insertion; if not inserted, use paste command
+        setTimeout(() => {
+          const current = (liInput.innerText || liInput.textContent || '').replace(/\n/g, '').trim();
+          if (!current || current.length < 3) {
+            liInput.focus();
+            document.execCommand('selectAll', false, null);
+            document.execCommand('paste');
+          }
+        }, 80);
+        liInput.dispatchEvent(new InputEvent('input', { bubbles: true }));
+      }).catch(() => {
+        // No clipboard permission — try execCommand directly
+        liInput.focus();
+        document.execCommand('selectAll', false, null);
+        document.execCommand('insertText', false, text);
+        liInput.dispatchEvent(new InputEvent('input', { bubbles: true }));
+      });
+      showToast('✓ Filled LinkedIn post');
+      return true;
+    }
+  }
+
+  // ── lastFocusedEditable fallback (for unrecognized sites) ─────────────────
+  if (lastFocusedEditable && document.contains(lastFocusedEditable)) {
+    const lfe = lastFocusedEditable;
+    const r = lfe.getBoundingClientRect();
+    if (r.width > 50) {
+      if (lfe.isContentEditable) {
+        _injectIntoContentEditable(lfe, text);
+      } else if (lfe.tagName === 'INPUT' || lfe.tagName === 'TEXTAREA') {
+        const start = lfe.selectionStart ?? lfe.value.length;
+        const end = lfe.selectionEnd ?? lfe.value.length;
+        lfe.value = lfe.value.slice(0, start) + text + lfe.value.slice(end);
+        lfe.selectionStart = lfe.selectionEnd = start + text.length;
+        lfe.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      showToast('✓ Text inserted');
       return true;
     }
   }
@@ -1847,7 +1973,6 @@ if (isContextValid()) {
       platform: 'Gmail',
     },
     'app.slack.com': {
-      // Slack Web uses multiple possible selectors depending on version
       msgSelector: [
         'div.c-message_kit__blocks',
         'div.p-rich_text_block',
@@ -1857,14 +1982,26 @@ if (isContextValid()) {
         'div.c-message_kit__text',
       ].join(', '),
       compose: () =>
-        document.querySelector('div[data-qa="message_input"] [contenteditable="true"]') ||
+        document.querySelector('[data-qa="message_input"] div[contenteditable="true"]') ||
+        document.querySelector('[data-qa="message_input"] .p-rich_text_input') ||
+        document.querySelector('div.p-message_input__input [contenteditable="true"]') ||
+        document.querySelector('div.p-rich_text_input[contenteditable="true"]') ||
+        document.querySelector('div[aria-label^="Message"][contenteditable="true"]') ||
+        document.querySelector('div[aria-placeholder][contenteditable="true"]') ||
         document.querySelector('.ql-editor[contenteditable="true"]') ||
-        document.querySelector('div[aria-label][contenteditable="true"]') ||
-        document.querySelector('div[contenteditable="true"][role="textbox"]'),
+        document.querySelector('div[contenteditable="true"][role="textbox"]') ||
+        [...document.querySelectorAll('div[contenteditable="true"]')]
+          .find(el => {
+            if (el.closest('#vt-popup-panel')) return false;
+            const r = el.getBoundingClientRect();
+            return r.bottom > window.innerHeight - 200 && r.width > 200;
+          }),
       sendBtn: () =>
         document.querySelector('button[data-qa="texty_send_button"]') ||
+        document.querySelector('button[data-qa="message_input_send_button"]') ||
         document.querySelector('button[aria-label="Send message"]') ||
-        document.querySelector('button[data-qa="message_input_send_button"]'),
+        document.querySelector('button[aria-label="Send Now"]') ||
+        document.querySelector('button[data-qa="messenger_send_button"]'),
       platform: 'Slack',
     },
     'linkedin.com': {
@@ -1986,8 +2123,17 @@ if (isContextValid()) {
           const base64 = await new Promise(r => { reader.onloadend = () => r(reader.result); reader.readAsDataURL(blob); });
           const res = await sendMsg({ type: 'API_TRANSLATE_AUDIO', audioData: base64, mimeType: 'audio/webm' });
           chatOutgoingText = res?.success ? (res.data?.transcript || res.data?.english_text || '') : '';
-          if (!chatOutgoingText) showToast('Could not transcribe. Try again.');
-        } catch { showToast('Transcription failed.'); }
+          if (!chatOutgoingText) {
+            const errMsg = res?.error || '';
+            if (errMsg.includes('transcribe') || errMsg.includes('speak')) {
+              showToast('Speak clearly and hold mic for 2+ seconds.');
+            } else if (!res?.success) {
+              showToast('Backend error — make sure server is running.');
+            } else {
+              showToast('Could not hear you. Try again.');
+            }
+          }
+        } catch (e) { showToast('Mic error: ' + (e?.message || 'Try again')); }
         chatLoading = false; chatMicRecording = false; refreshChatPanel();
       };
       chatMicRecorder.start();

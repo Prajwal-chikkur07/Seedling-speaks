@@ -1,12 +1,7 @@
-import { createContext, useContext, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import {
-  View,
-  Text,
-  TouchableOpacity,
-  ScrollView,
-  StyleSheet,
-  Animated,
-  Image,
+  View, Text, TouchableOpacity, ScrollView,
+  StyleSheet, Animated, Image,
 } from 'react-native';
 import { Slot, useRouter, usePathname } from 'expo-router';
 import { useUser } from '@clerk/clerk-expo';
@@ -25,41 +20,37 @@ const MENU_SECTIONS = [
     ],
   },
   {
-    title: 'Translation',
+    title: 'Translate',
     items: [
-      { name: 'native-to-english', label: 'Speech to Text', icon: '🎙️', route: '/(drawer)/native-to-english' },
-      { name: 'continuous', label: 'Continuous Listening', icon: '👂', route: '/(drawer)/continuous' },
-      { name: 'english-to-native', label: 'English to Native', icon: '🌐', route: '/english-to-native' },
-      { name: 'vision', label: 'Vision Translate', icon: '📷', route: '/vision' },
-      { name: 'video', label: 'Video Translate', icon: '🎬', route: '/video' },
+      { name: 'native-to-english', label: 'Speech to Text',      icon: '🎙️', route: '/(drawer)/native-to-english' },
+      { name: 'continuous',        label: 'Continuous Listening', icon: '👂', route: '/(drawer)/continuous'        },
+      { name: 'english-to-native', label: 'English → Native',     icon: '🌐', route: '/english-to-native'          },
+      { name: 'vision',            label: 'Vision Translate',      icon: '📷', route: '/vision'                    },
+      { name: 'video',             label: 'Video Subtitles',       icon: '🎬', route: '/video'                     },
     ],
   },
   {
     title: 'Account',
     items: [
-      { name: 'history', label: 'History', icon: '🕐', route: '/(drawer)/history' },
-      { name: 'keyboard-setup', label: 'Keyboard Setup', icon: '⌨️', route: '/keyboard-setup' },
-      { name: 'profile', label: 'Profile', icon: '👤', route: '/(drawer)/profile' },
-      { name: 'settings', label: 'Settings', icon: '⚙️', route: '/(drawer)/settings' },
+      { name: 'history',        label: 'History',  icon: '🕐', route: '/(drawer)/history'  },
+      { name: 'keyboard-setup', label: 'Keyboard', icon: '⌨️', route: '/keyboard-setup'    },
+      { name: 'profile',        label: 'Profile',  icon: '👤', route: '/(drawer)/profile'  },
+      { name: 'settings',       label: 'Settings', icon: '⚙️', route: '/(drawer)/settings' },
     ],
   },
 ];
 
-function CustomDrawerContent({ closeDrawer }) {
-  const router = useRouter();
+function DrawerContent({ closeDrawer }) {
+  const router   = useRouter();
   const pathname = usePathname();
   const { user } = useUser();
-  const insets = useSafeAreaInsets();
+  const insets   = useSafeAreaInsets();
 
   const displayName = user
     ? [user.firstName, user.lastName].filter(Boolean).join(' ') || 'User'
     : 'User';
-  const initials = displayName
-    .split(' ')
-    .map((n) => n[0])
-    .join('')
-    .toUpperCase()
-    .slice(0, 2);
+  const initials = displayName.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 2);
+  const email    = user?.primaryEmailAddress?.emailAddress || '';
 
   function isActive(item) {
     if (item.name === 'index') return pathname === '/' || pathname === '/(drawer)';
@@ -68,29 +59,29 @@ function CustomDrawerContent({ closeDrawer }) {
 
   return (
     <View style={[ds.container, { paddingTop: insets.top }]}>
-      {/* User header */}
-      <View style={ds.header}>
+      {/* Profile header */}
+      <View style={ds.profileSection}>
         <View style={ds.avatar}>
           <Text style={ds.avatarText}>{initials}</Text>
         </View>
-        <View style={ds.headerInfo}>
-          <Text style={ds.userName}>{displayName}</Text>
-          <Text style={ds.appLabel}>SeedlingSpeaks</Text>
+        <View style={ds.profileInfo}>
+          <Text style={ds.profileName} numberOfLines={1}>{displayName}</Text>
+          <Text style={ds.profileEmail} numberOfLines={1}>{email}</Text>
         </View>
       </View>
 
       <View style={ds.divider} />
 
-      {/* Menu items */}
+      {/* Menu */}
       <ScrollView
         style={ds.scroll}
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: insets.bottom + 20 }}
+        contentContainerStyle={{ paddingBottom: insets.bottom + 24, paddingTop: 8 }}
       >
         {MENU_SECTIONS.map((section, si) => (
           <View key={si}>
             {section.title && (
-              <Text style={ds.sectionTitle}>{section.title}</Text>
+              <Text style={ds.sectionLabel}>{section.title.toUpperCase()}</Text>
             )}
             {section.items.map((item) => {
               const active = isActive(item);
@@ -99,97 +90,68 @@ function CustomDrawerContent({ closeDrawer }) {
                   key={item.name}
                   style={[ds.menuItem, active && ds.menuItemActive]}
                   activeOpacity={0.7}
-                  onPress={() => {
-                    closeDrawer();
-                    setTimeout(() => router.push(item.route), 200);
-                  }}
+                  onPress={() => { closeDrawer(); setTimeout(() => router.push(item.route), 180); }}
                 >
-                  <Text style={ds.menuIcon}>{item.icon}</Text>
+                  <View style={[ds.menuIconWrap, active && ds.menuIconWrapActive]}>
+                    <Text style={{ fontSize: 16 }}>{item.icon}</Text>
+                  </View>
                   <Text style={[ds.menuLabel, active && ds.menuLabelActive]}>
                     {item.label}
                   </Text>
-                  {active && <View style={ds.activeIndicator} />}
+                  {active && <View style={ds.activeDot} />}
                 </TouchableOpacity>
               );
             })}
-            {si < MENU_SECTIONS.length - 1 && (
-              <View style={ds.sectionDivider} />
-            )}
+            {si < MENU_SECTIONS.length - 1 && <View style={ds.sectionDivider} />}
           </View>
         ))}
-        <Text style={ds.version}>v2.5 · Built by Seedlinglabs</Text>
+
+        <View style={ds.footer}>
+          <Image source={require('../../assets/logo.png')} style={ds.footerLogo} />
+          <Text style={ds.footerText}>SeedlingSpeaks v2.5</Text>
+        </View>
       </ScrollView>
     </View>
   );
 }
 
 export default function DrawerLayout() {
-  const translateX = useRef(new Animated.Value(-DRAWER_WIDTH)).current;
+  const translateX     = useRef(new Animated.Value(-DRAWER_WIDTH)).current;
   const overlayOpacity = useRef(new Animated.Value(0)).current;
   const [isOpen, setIsOpen] = useState(false);
 
   function openDrawer() {
     setIsOpen(true);
     Animated.parallel([
-      Animated.spring(translateX, {
-        toValue: 0,
-        useNativeDriver: true,
-        tension: 60,
-        friction: 12,
-      }),
-      Animated.timing(overlayOpacity, {
-        toValue: 1,
-        duration: 250,
-        useNativeDriver: true,
-      }),
+      Animated.spring(translateX, { toValue: 0, useNativeDriver: true, tension: 65, friction: 13 }),
+      Animated.timing(overlayOpacity, { toValue: 1, duration: 240, useNativeDriver: true }),
     ]).start();
   }
 
   function closeDrawer() {
     Animated.parallel([
-      Animated.spring(translateX, {
-        toValue: -DRAWER_WIDTH,
-        useNativeDriver: true,
-        tension: 60,
-        friction: 12,
-      }),
-      Animated.timing(overlayOpacity, {
-        toValue: 0,
-        duration: 200,
-        useNativeDriver: true,
-      }),
+      Animated.spring(translateX, { toValue: -DRAWER_WIDTH, useNativeDriver: true, tension: 65, friction: 13 }),
+      Animated.timing(overlayOpacity, { toValue: 0, duration: 200, useNativeDriver: true }),
     ]).start(() => setIsOpen(false));
   }
 
   return (
     <DrawerContext.Provider value={{ openDrawer, closeDrawer }}>
       <View style={{ flex: 1 }}>
-        {/* Main screen content */}
         <Slot />
-
-        {/* Floating Assistant Widget */}
         <FloatingAssistant />
 
-        {/* Dark overlay */}
         {isOpen && (
-          <Animated.View
-            style={[ds.overlay, { opacity: overlayOpacity }]}
-            pointerEvents={isOpen ? 'auto' : 'none'}
-          >
-            <TouchableOpacity
-              style={StyleSheet.absoluteFill}
-              activeOpacity={1}
-              onPress={closeDrawer}
-            />
+          <Animated.View style={[ds.overlay, { opacity: overlayOpacity }]} pointerEvents="auto">
+            <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={closeDrawer} />
           </Animated.View>
         )}
 
-        {/* Sliding drawer panel */}
         <Animated.View
           style={[ds.drawer, { transform: [{ translateX }] }]}
           pointerEvents={isOpen ? 'auto' : 'none'}
         >
-          <CustomDrawerContent closeDrawer={closeDrawer} />
+          <DrawerContent closeDrawer={closeDrawer} />
         </Animated.View>
       </View>
     </DrawerContext.Provider>
@@ -199,125 +161,73 @@ export default function DrawerLayout() {
 const ds = StyleSheet.create({
   overlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.45)',
+    backgroundColor: 'rgba(0,0,0,0.5)',
     zIndex: 10,
   },
   drawer: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    bottom: 0,
-    width: DRAWER_WIDTH,
-    zIndex: 11,
+    position: 'absolute', top: 0, left: 0, bottom: 0,
+    width: DRAWER_WIDTH, zIndex: 11,
     backgroundColor: COLORS.bg,
-    shadowColor: '#000',
-    shadowOffset: { width: 4, height: 0 },
-    shadowOpacity: 0.25,
-    shadowRadius: 12,
-    elevation: 20,
+    shadowColor: '#000', shadowOffset: { width: 6, height: 0 },
+    shadowOpacity: 0.2, shadowRadius: 20, elevation: 24,
   },
-  container: {
-    flex: 1,
-    backgroundColor: COLORS.bg,
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 20,
-    gap: 14,
+  container: { flex: 1, backgroundColor: COLORS.bg },
+
+  profileSection: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: 20, paddingVertical: 20, gap: 14,
   },
   avatar: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: COLORS.saffronLight,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 2,
-    borderColor: COLORS.saffron,
+    width: 50, height: 50, borderRadius: 25,
+    backgroundColor: COLORS.saffron,
+    alignItems: 'center', justifyContent: 'center',
+    shadowColor: COLORS.saffron, shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.3, shadowRadius: 6, elevation: 4,
   },
-  avatarText: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: COLORS.saffron,
-  },
-  headerInfo: {
-    flex: 1,
-  },
-  userName: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: COLORS.ink,
-  },
-  appLabel: {
-    fontSize: 12,
-    color: COLORS.muted,
-    marginTop: 2,
-  },
-  divider: {
-    height: 1,
-    backgroundColor: COLORS.border,
-    marginHorizontal: 20,
-  },
-  scroll: {
-    flex: 1,
-    paddingTop: 8,
-  },
-  sectionTitle: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: COLORS.faded,
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-    paddingHorizontal: 24,
-    paddingTop: 16,
-    paddingBottom: 6,
+  avatarText: { fontSize: 18, fontWeight: '800', color: '#fff' },
+  profileInfo: { flex: 1 },
+  profileName: { fontSize: 16, fontWeight: '700', color: COLORS.ink, marginBottom: 2 },
+  profileEmail: { fontSize: 12, color: COLORS.muted, fontWeight: '500' },
+
+  divider: { height: 1, backgroundColor: COLORS.border, marginHorizontal: 20 },
+  scroll: { flex: 1 },
+
+  sectionLabel: {
+    fontSize: 10, fontWeight: '700', color: COLORS.faded,
+    letterSpacing: 1.2, textTransform: 'uppercase',
+    paddingHorizontal: 24, paddingTop: 20, paddingBottom: 8,
   },
   menuItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 13,
-    paddingHorizontal: 24,
-    marginHorizontal: 10,
-    borderRadius: 12,
-    gap: 14,
+    flexDirection: 'row', alignItems: 'center',
+    paddingVertical: 11, paddingHorizontal: 16,
+    marginHorizontal: 10, borderRadius: 14, gap: 12,
   },
-  menuItemActive: {
-    backgroundColor: COLORS.saffronLight,
+  menuItemActive: { backgroundColor: COLORS.saffronLight },
+  menuIconWrap: {
+    width: 34, height: 34, borderRadius: 10,
+    backgroundColor: COLORS.surface,
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: COLORS.border,
   },
-  menuIcon: {
-    fontSize: 20,
-    width: 28,
-    textAlign: 'center',
+  menuIconWrapActive: {
+    backgroundColor: 'rgba(232,130,12,0.12)',
+    borderColor: 'rgba(232,130,12,0.3)',
   },
-  menuLabel: {
-    fontSize: 15,
-    fontWeight: '500',
-    color: COLORS.warm,
-    flex: 1,
-  },
-  menuLabelActive: {
-    fontWeight: '700',
-    color: COLORS.saffronHover,
-  },
-  activeIndicator: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: COLORS.saffron,
-  },
+  menuLabel: { fontSize: 14, fontWeight: '500', color: COLORS.warm, flex: 1 },
+  menuLabelActive: { fontWeight: '700', color: COLORS.saffronHover },
+  activeDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: COLORS.saffron },
+
   sectionDivider: {
-    height: 1,
-    backgroundColor: COLORS.border,
-    marginHorizontal: 24,
-    marginTop: 8,
-    marginBottom: 4,
+    height: 1, backgroundColor: COLORS.border,
+    marginHorizontal: 24, marginVertical: 8,
   },
-  version: {
-    textAlign: 'center',
-    fontSize: 11,
-    color: COLORS.faded,
-    marginTop: 24,
+  footer: {
+    flexDirection: 'row', alignItems: 'center',
+    justifyContent: 'center', gap: 8,
+    marginTop: 28, paddingTop: 16,
+    borderTopWidth: 1, borderTopColor: COLORS.border,
+    marginHorizontal: 20,
   },
+  footerLogo: { width: 18, height: 18, borderRadius: 4, opacity: 0.5 },
+  footerText: { fontSize: 11, color: COLORS.faded, fontWeight: '600' },
 });

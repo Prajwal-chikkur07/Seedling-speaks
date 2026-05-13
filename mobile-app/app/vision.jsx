@@ -24,6 +24,19 @@ export default function VisionScreen() {
   const [showPicker, setShowPicker] = useState(false);
 
   async function pickImage(useCamera) {
+    if (useCamera) {
+      const { status } = await ImagePicker.requestCameraPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission needed', 'Camera access is required to take photos.');
+        return;
+      }
+    } else {
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission needed', 'Photo library access is required.');
+        return;
+      }
+    }
     const method = useCamera ? ImagePicker.launchCameraAsync : ImagePicker.launchImageLibraryAsync;
     const result = await method({ mediaTypes: ['images'], quality: 0.8 });
     if (!result.canceled && result.assets[0]) {

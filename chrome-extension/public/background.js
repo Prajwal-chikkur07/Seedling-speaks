@@ -1,6 +1,6 @@
 // Background service worker for Voice Translation Extension
 
-const API_BASE = 'http://127.0.0.1:8000/api';
+const API_BASE = 'http://127.0.0.1:8001/api';
 
 // Clicking the toolbar icon opens/toggles the sidebar panel on the active tab
 chrome.action.onClicked.addListener((tab) => {

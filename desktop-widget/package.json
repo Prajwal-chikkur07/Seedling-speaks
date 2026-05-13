@@ -29,8 +29,16 @@
     "dmg": {
       "title": "SeedlingSpeaks Widget",
       "contents": [
-        { "x": 130, "y": 220 },
-        { "x": 410, "y": 220, "type": "link", "path": "/Applications" }
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
       ]
     },
     "files": [
@@ -63,7 +71,7 @@
   "author": "Seedlinglabs",
   "license": "ISC",
   "devDependencies": {
-    "electron": "^41.0.3",
+    "electron": "^36.9.5",
     "electron-builder": "^26.0.12"
   },
   "dependencies": {

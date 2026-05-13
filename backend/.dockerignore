@@ -1,0 +1,11 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+.env.*
+temp_audio/
+temp_video/
+translation_cache.db
+.DS_Store
+*.log

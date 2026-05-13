@@ -3,19 +3,48 @@
 .env.*
 !.env.example
 
-# Python virtual environments
+# Python
 venv/
 .venv/
 env/
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
+
+# Temp files generated at runtime
+backend/temp_audio/
+backend/temp_video/
+backend/translation_cache.db
 
 # macOS
 .DS_Store
+.AppleDouble
+.LSOverride
 
 # Node
 node_modules/
+npm-debug.log*
 
-# Desktop Widget build output
+# Build outputs
+dist/
+build/
+react-frontend/dist/
 desktop-widget/dist/
+chrome-extension/dist/
+
+# Expo
+mobile-app/.expo/
+mobile-app/android/
+mobile-app/ios/Pods/
+
+# Logs
+*.log
+.run-logs/
+
+# Misc
+*.mov
+*.mp4
+Capstone-project/
+IMPLEMENTATION_COMPLETE.md
+MASTER_UI_CHANGES.md

@@ -286,7 +286,7 @@ function cropPng(srcPath, x, y, w, h) {
 function visionTranslate(imgPath, lang) {
   const r = spawnSync('curl', [
     '-s', '-X', 'POST',
-    'https://seedlingspeaks-backend-0vkj.onrender.com/api/vision-translate',
+    'http://127.0.0.1:8001/api/vision-translate',
     '-F', `file=@${imgPath};type=image/png`,
     '-F', `target_language=${lang}`,
   ], { encoding: 'utf8', timeout: 60000 });
@@ -679,7 +679,7 @@ ipcMain.handle('get-user-info', () => currentUser);
 ipcMain.handle('get-widget-enabled', () => isBubbleEnabled);
 
 function warmUpBackend() {
-  fetch('https://seedlingspeaks-backend-0vkj.onrender.com/api/health')
+  fetch('http://127.0.0.1:8001/api/health')
     .then(() => console.log('Backend warmed up successfully'))
     .catch(err => console.error('Failed to warm up backend:', err));
 }
@@ -915,7 +915,7 @@ ipcMain.on('open-dashboard', () => {
 
 async function retoneText(text, tone) {
   try {
-    const response = await fetch('https://seedlingspeaks-backend-0vkj.onrender.com/api/rewrite-tone', {
+    const response = await fetch('http://127.0.0.1:8001/api/rewrite-tone', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text, tone })
@@ -941,23 +941,25 @@ ipcMain.on('process-audio', async (event, audioBuffer) => {
     const formData = `file=@${tmpPath}`;
     const r = spawnSync('curl', [
       '-s', '-X', 'POST',
-      'https://seedlingspeaks-backend-0vkj.onrender.com/api/translate-audio',
+      'http://127.0.0.1:8001/api/translate-audio',
       '-F', formData
     ], { encoding: 'utf8', timeout: 60000 });
 
+    console.log('[audio] curl status:', r.status, 'stdout:', r.stdout?.slice(0, 200), 'stderr:', r.stderr?.slice(0, 200));
     if (r.error || r.status !== 0) throw new Error(r.stderr || 'Sarvam request failed');
-    
+
     const result = JSON.parse(r.stdout);
+    console.log('[audio] result:', JSON.stringify(result).slice(0, 200));
     const nativeTranscript = result.native_transcript || '';
     const englishTranscript = result.transcript || '';
 
-    if (!englishTranscript) throw new Error('No transcript returned');
+    if (!englishTranscript) throw new Error('No transcript returned — response: ' + JSON.stringify(result));
     
     // ── Log to Database (Native to English) ──────────────────────────
     let currentSessionId = null;
     if (currentUser && currentUser.id) {
       try {
-        const sessionRes = await fetch('https://seedlingspeaks-backend-0vkj.onrender.com/api/native-to-english/session', {
+        const sessionRes = await fetch('http://127.0.0.1:8001/api/native-to-english/session', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -971,7 +973,7 @@ ipcMain.on('process-audio', async (event, audioBuffer) => {
           const sessionData = await sessionRes.json();
           currentSessionId = sessionData.session_id;
 
-          await fetch('https://seedlingspeaks-backend-0vkj.onrender.com/api/native-to-english/transcription', {
+          await fetch('http://127.0.0.1:8001/api/native-to-english/transcription', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -991,7 +993,6 @@ ipcMain.on('process-audio', async (event, audioBuffer) => {
 
     if (bubbleWin) bubbleWin.webContents.send('processing-done');
     if (toastWin) toastWin.hide();
-
     if (!overlayWin) createOverlay();
     positionOverlay();
     overlayWin.show();
@@ -1217,7 +1218,7 @@ function translateText(text, lang) {
   });
   const r = spawnSync('curl', [
     '-s', '-X', 'POST',
-    'https://seedlingspeaks-backend-0vkj.onrender.com/api/translate-text',
+    'http://127.0.0.1:8001/api/translate-text',
     '-H', 'Content-Type: application/json',
     '-d', body,
   ], { encoding: 'utf8', timeout: 30000 });
@@ -1364,10 +1365,20 @@ ipcMain.on('smart-send', (_, { text, subject, body }) => {
   hideOverlay();
 
   if (target === 'fallback') {
-    const { clipboard } = require('electron');
-    clipboard.writeText(text);
-    showToast({ type: 'info', message: '📋 Message copied — paste it anywhere' }, 3000);
-    setTimeout(() => { app.show(); if (bubbleWin) bubbleWin.show(); }, 200);
+    // Try direct accessibility insertion into the focused text field
+    const axPath = path.join(__dirname, 'ax_insert_text');
+    app.hide();
+    setTimeout(() => {
+      const r = spawnSync(axPath, [text], { encoding: 'utf8', timeout: 5000 });
+      console.log('[smart-send] ax_insert_text:', r.stdout, r.stderr);
+      if (r.status !== 0 || r.stderr?.includes('Error')) {
+        // Fallback to clipboard if accessibility insert fails
+        const { clipboard } = require('electron');
+        clipboard.writeText(text);
+        showToast({ type: 'info', message: '📋 Copied to clipboard — press Cmd+V to paste' }, 3000);
+      }
+      setTimeout(() => { app.show(); if (bubbleWin) bubbleWin.show(); }, 300);
+    }, 400);
     return;
   }
 

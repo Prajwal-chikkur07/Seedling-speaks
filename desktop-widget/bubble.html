@@ -72,6 +72,31 @@
       40%            { transform: scaleY(1.8); opacity: 1; }
     }
 
+    /* ── Processing pill ── */
+    .proc-pill {
+      display: none;
+      align-items: center; gap: 8px;
+      background: var(--surface-ink);
+      border: 1px solid rgba(232,130,12,0.5);
+      border-radius: 20px; padding: 7px 14px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.6), 0 0 12px rgba(232,130,12,0.2);
+      -webkit-app-region: no-drag; user-select: none;
+      font-family: 'DM Sans', sans-serif;
+    }
+    .proc-label {
+      font-size: 11px; font-weight: 500; color: rgba(255,255,255,0.7);
+      letter-spacing: 0.01em;
+    }
+    .proc-spinner {
+      width: 14px; height: 14px;
+      border: 2px solid rgba(232,130,12,0.3);
+      border-top-color: #E8820C;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      flex-shrink: 0;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
     /* icon buttons inside rec pill */
     .rec-btn {
       width: 22px; height: 22px; border-radius: 50%;
@@ -119,21 +144,29 @@
     </button>
   </div>
 
+  <!-- Processing state -->
+  <div class="proc-pill" id="procPill">
+    <div class="proc-spinner"></div>
+    <span class="proc-label">Processing…</span>
+  </div>
+
   <script>
     const { ipcRenderer } = require('electron');
 
-    const pill = document.getElementById('pill');
-    const recPill = document.getElementById('recPill');
+    const pill     = document.getElementById('pill');
+    const recPill  = document.getElementById('recPill');
+    const procPill = document.getElementById('procPill');
     
     let isRecording = false;
     let mediaRecorder;
     let audioChunks = [];
 
-    // Helper to switch UI instantly
-    function setUIState(recording) {
-      isRecording = recording;
-      pill.style.display    = recording ? 'none'  : 'flex';
-      recPill.style.display = recording ? 'flex'  : 'none';
+    // Helper to switch UI — state: 'idle' | 'recording' | 'processing'
+    function setUIState(state) {
+      isRecording = state === 'recording';
+      pill.style.display     = state === 'idle'       ? 'flex' : 'none';
+      recPill.style.display  = state === 'recording'  ? 'flex' : 'none';
+      procPill.style.display = state === 'processing' ? 'flex' : 'none';
     }
 
     // ── Drag on idle pill ──
@@ -170,7 +203,7 @@
         };
 
         mediaRecorder.onstop = async () => {
-          setUIState(false);
+          setUIState('processing');
           const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
           const arrayBuffer = await audioBlob.arrayBuffer();
           const buffer = Buffer.from(arrayBuffer);
@@ -178,10 +211,10 @@
         };
 
         mediaRecorder.start();
-        setUIState(true);
+        setUIState('recording');
       } catch (err) {
         console.error('Recording failed:', err);
-        setUIState(false);
+        setUIState('idle');
       }
     }
 
@@ -213,7 +246,15 @@
     });
 
     ipcRenderer.on('recording-state', (_, recording) => {
-      setUIState(recording);
+      setUIState(recording ? 'recording' : 'idle');
+    });
+
+    ipcRenderer.on('processing-state', (_, active) => {
+      if (active) setUIState('processing');
+    });
+
+    ipcRenderer.on('processing-done', () => {
+      setUIState('idle');
     });
 
     window.addEventListener('contextmenu', (e) => {
