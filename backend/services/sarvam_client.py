@@ -61,7 +61,7 @@ def _transcribe_with_gemini(audio_file_path: str) -> dict:
 
         import google.generativeai as genai
         genai.configure(api_key=GEMINI_KEY)
-        model = genai.GenerativeModel("gemini-2.0-flash")
+        model = genai.GenerativeModel("gemini-2.5-flash")
 
         with open(audio_file_path, "rb") as f:
             audio_bytes = f.read()
@@ -179,24 +179,26 @@ def _process_single_audio(audio_file_path: str, content_type: str) -> dict:
     logger.info(f"Sarvam STT-Translate response: status={resp_trans.status_code}, body={resp_trans.text[:300]}")
     logger.info(f"Sarvam STT-Native response: status={resp_native.status_code}, body={resp_native.text[:300]}")
     
-    if resp_trans.status_code == 200 and resp_native.status_code == 200:
-        tbody = resp_trans.json()
-        nbody = resp_native.json()
-        
-        transcript = tbody.get("transcript", "")
-        native_transcript = nbody.get("transcript", "")
-        confidence = tbody.get("confidence", None)
-        
-        if confidence is None:
-            words = tbody.get("words", [])
-            if words:
-                scores = [w.get("confidence", 1.0) for w in words if "confidence" in w]
-                confidence = round(sum(scores) / len(scores), 3) if scores else None
-                
-        return {"transcript": transcript, "native_transcript": native_transcript, "confidence": confidence}
-    else:
+    if resp_trans.status_code != 200:
         logger.error(f"Sarvam STT error trans_status={resp_trans.status_code}, native_status={resp_native.status_code}")
         raise Exception(f"Sarvam STT failed. TextTranslate={resp_trans.status_code}, STT={resp_native.status_code}")
+
+    tbody = resp_trans.json()
+    transcript = tbody.get("transcript", "")
+    confidence = tbody.get("confidence", None)
+    if confidence is None:
+        words = tbody.get("words", [])
+        if words:
+            scores = [w.get("confidence", 1.0) for w in words if "confidence" in w]
+            confidence = round(sum(scores) / len(scores), 3) if scores else None
+
+    if resp_native.status_code == 200:
+        native_transcript = resp_native.json().get("transcript", "")
+    else:
+        logger.warning(f"Sarvam STT-Native returned {resp_native.status_code}, using translate transcript as fallback")
+        native_transcript = transcript
+
+    return {"transcript": transcript, "native_transcript": native_transcript, "confidence": confidence}
 
 def translate_text(text: str, source_language: str, target_language: str) -> str:
     """

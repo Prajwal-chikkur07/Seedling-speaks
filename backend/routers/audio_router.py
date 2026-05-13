@@ -182,7 +182,7 @@ async def handle_diarize_audio(
                     import google.generativeai as genai
 
                     genai.configure(api_key=GEMINI_KEY)
-                    model = genai.GenerativeModel("gemini-2.0-flash")
+                    model = genai.GenerativeModel("gemini-2.5-flash")
 
                     if speaker_count >= 2:
                         speaker_instruction = (
@@ -368,7 +368,7 @@ async def handle_diarize_and_clone(
                 try:
                     import google.generativeai as genai
                     genai.configure(api_key=GEMINI_KEY)
-                    model = genai.GenerativeModel("gemini-2.0-flash")
+                    model = genai.GenerativeModel("gemini-2.5-flash")
                     prompt = f"""Split this transcript into speaker turns (2-4 speakers).
 Return ONLY valid JSON array:
 [{{"speaker":"Person 1","text":"...","emotion":"neutral","start":0,"end":0}}]
