@@ -28,7 +28,7 @@ export default function OutputBox({ label, content, language, type }) {
       setLoading(null);
       showError(err.response?.data?.detail || 'TTS Error');
     }
-  }, [content, language, playingKey, setField, setLoading, showError]);
+  }, [content, language, playingKey, setField, setLoading, showError, state.selectedSarvamVoice]);
 
   const handleStop = useCallback(() => {
     if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }

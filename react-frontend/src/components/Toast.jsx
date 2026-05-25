@@ -13,6 +13,7 @@ import { CheckCircle, XCircle, AlertTriangle, Info, X } from 'lucide-react';
 // ── Singleton event bus ───────────────────────────────────────────────────────
 const listeners = new Set();
 
+// eslint-disable-next-line react-refresh/only-export-components
 export const toast = {
   _emit(type, message, duration = 4000) {
     const id = Date.now() + Math.random();
@@ -67,6 +68,12 @@ export default function ToastContainer() {
   const [toasts, setToasts] = useState([]);
   const timers = useRef({});
 
+  const remove = useCallback((id) => {
+    clearTimeout(timers.current[id]);
+    delete timers.current[id];
+    setToasts(prev => prev.filter(t => t.id !== id));
+  }, []);
+
   useEffect(() => {
     const handler = (t) => {
       setToasts(prev => [...prev.slice(-4), t]); // max 5 visible
@@ -75,17 +82,12 @@ export default function ToastContainer() {
       }
     };
     listeners.add(handler);
+    const currentTimers = timers.current;
     return () => {
       listeners.delete(handler);
-      Object.values(timers.current).forEach(clearTimeout);
+      Object.values(currentTimers).forEach(clearTimeout);
     };
-  }, []);
-
-  const remove = useCallback((id) => {
-    clearTimeout(timers.current[id]);
-    delete timers.current[id];
-    setToasts(prev => prev.filter(t => t.id !== id));
-  }, []);
+  }, [remove]);
 
   return (
     <div className="fixed bottom-20 md:bottom-6 right-4 z-[9998] flex flex-col gap-2 items-end pointer-events-none">

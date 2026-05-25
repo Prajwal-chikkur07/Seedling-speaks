@@ -17,8 +17,10 @@ export default function DesktopAuth() {
       sentRef.current = true;
       sendToDesktop();
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isSignedIn, clerkUser]);
 
+   
   async function sendToDesktop() {
     setStatus('sending');
     setErrorMessage('');

@@ -1,3 +1,4 @@
+/* eslint-disable no-unused-vars */
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useUser } from '@clerk/clerk-react';
@@ -119,7 +120,7 @@ function FileUploadZone({ onTranscribed }) {
             <Upload className="w-5 h-5 text-gray-400" />
           </div>
           <div className="text-center">
-            <p className="text-[14px] font-semibold text-gray-700">{L.dropAudioHere || "Drop audio file here"}</p>
+            <p className="text-[14px] font-semibold text-gray-700">Drop audio file here</p>
             <p className="text-[12px] text-gray-400 mt-1">MP3, WAV, M4A, OGG, FLAC · up to 100MB</p>
           </div>
         </>
@@ -394,14 +395,14 @@ export default function Home() {
     } finally {
       setIsRewriting(false);
     }
-  }, [editableTranscript, state.englishText, state.customDictionary, customToneInput, showError, incrementUsage, state.n2eSessionId, state.sourceLanguage, state.confidenceScore]);
+  }, [editableTranscript, state.englishText, state.customDictionary, customToneInput, showError, incrementUsage, state.n2eSessionId, state.confidenceScore]);
 
   const handleRetoneDropdownApply = useCallback(async () => {
     if (!selectedRetoneForDropdown) return;
     setShowRetoneDropdown(false);
     setSelectedTone(selectedRetoneForDropdown);
     await handleRewrite(selectedRetoneForDropdown);
-  }, [selectedRetoneForDropdown]);
+  }, [selectedRetoneForDropdown, handleRewrite]);
 
   const handleTranslate = useCallback(async () => {
     // Translate the currently displayed version (Original or Retoned)

@@ -7,7 +7,7 @@ const HISTORY_KEY = 'vt_video_history';
 function loadHistory() {
   try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); } catch { return []; }
 }
-function saveHistory(h) { try { localStorage.setItem(HISTORY_KEY, JSON.stringify(h)); } catch {} }
+function saveHistory(h) { try { localStorage.setItem(HISTORY_KEY, JSON.stringify(h)); } catch { /* ignore */ } }  
 
 const LANG_NAMES = {
   'hi-IN': 'Hindi', 'en-IN': 'English', 'kn-IN': 'Kannada',

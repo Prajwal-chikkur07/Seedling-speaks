@@ -110,6 +110,7 @@ export default function VideoTranslate() {
       })
       .catch(() => {});
     return () => { if (vttBlobUrl) URL.revokeObjectURL(vttBlobUrl); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, videoId]);
 
   const langName = getLangName(targetLang);

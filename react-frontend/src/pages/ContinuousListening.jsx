@@ -22,6 +22,7 @@ export default function ContinuousListening() {
 
   useEffect(() => {
     if (sessionState === 'idle') sessionSetLang(state.selectedLanguage);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.selectedLanguage]);
 
   const [isSynthesizing, setIsSynthesizing] = useState(false);
@@ -84,7 +85,7 @@ export default function ContinuousListening() {
       audio.onerror = () => { setSpeakingLineId(null); URL.revokeObjectURL(url); };
       audio.play();
     } catch { setSpeakingLineId(null); }
-  }, [speakingLineId]);
+  }, [speakingLineId, state.selectedSarvamVoice]);
 
   const handleSynthesize = async () => {
     const src = lines.filter(l => !l.processing && l.text);

@@ -26,7 +26,7 @@ function ConfidencePill({ score }) {
 }
 
 export default function History() {
-  const { state, setField, setFields, deleteHistory, clearHistory, toggleStar, setHistoryTags } = useApp();
+  const { state, setFields, deleteHistory, clearHistory, toggleStar, setHistoryTags } = useApp();
   const navigate = useNavigate();
   const L = getLabels(state.uiLanguage);
   const [search, setSearch] = useState('');

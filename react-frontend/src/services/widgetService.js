@@ -70,6 +70,7 @@ export async function syncWidgetConfig(payload, { force = true, timeoutMs = 1000
 export async function enableWidgetWithConfig(payload, { timeoutMs = 1000 } = {}) {
   try {
     await syncWidgetConfig(payload, { force: true, timeoutMs });
-  } catch {}
+   
+  } catch { /* ignore config sync failure */ }
   return toggleWidgetEnabled({ enabled: true, timeoutMs });
 }

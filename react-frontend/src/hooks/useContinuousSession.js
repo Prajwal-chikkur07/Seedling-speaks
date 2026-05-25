@@ -171,6 +171,7 @@ export function useContinuousSession() {
   useEffect(() => {
     const handler = (s) => setSnap({ ...s });
     _session.listeners.add(handler);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setSnap({ ..._session });
     return () => { _session.listeners.delete(handler); };
   }, []);

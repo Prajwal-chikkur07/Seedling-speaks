@@ -22,6 +22,7 @@ export default function RecordingControls() {
   useEffect(() => {
     let interval;
     if (state.isRecording) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setRecordingTime(0);
       interval = setInterval(() => setRecordingTime((p) => p + 1), 1000);
     } else {

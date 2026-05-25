@@ -185,6 +185,7 @@ export default function Profile() {
       avatarUrl: clerkUser.imageUrl || '',
       uid: clerkUser.id,
     });
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setProfile(merged);
   }, [clerkUser]);
 

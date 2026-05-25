@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { Mic, MicOff, X, Send, Copy, Check, Loader2, Languages } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import * as api from '../services/api';
@@ -26,9 +26,11 @@ export default function MobileWidget() {
   const chunksRef = useRef([]);
   const streamRef = useRef(null);
   const timerRef = useRef(null);
-
   // Sync lang when profile default changes
-  useEffect(() => { setLang(state.selectedLanguage); }, [state.selectedLanguage]);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setLang(state.selectedLanguage);
+  }, [state.selectedLanguage]);
 
   const startRec = useCallback(async () => {
     try {
@@ -48,6 +50,7 @@ export default function MobileWidget() {
             const t = await api.translateText(text, lang);
             setTranslated(t);
           }
+         
         } catch { setTranscript('Could not transcribe. Try again.'); }
         setLoading(false);
       };
@@ -73,7 +76,8 @@ export default function MobileWidget() {
       const t = await api.translateText(typedText.trim(), lang);
       setTranslated(t);
       setTranscript(typedText.trim());
-    } catch {}
+     
+    } catch { /* translation failed silently */ }
     setLoading(false);
   }, [typedText, lang]);
 

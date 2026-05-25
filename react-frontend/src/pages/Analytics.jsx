@@ -32,9 +32,10 @@ function ConfidenceTrend({ history }) {
 export default function Analytics() {
   const { state } = useApp();
   const L = getLabels(state.uiLanguage);
-  const history = state.transcriptHistory || [];
+  const history = useMemo(() => state.transcriptHistory || [], [state.transcriptHistory]);
   const usage = state.usageStats || {};
 
+  // eslint-disable-next-line react-hooks/purity
   const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
   const thisWeek = history.filter(h => new Date(h.timestamp).getTime() > weekAgo);
 
@@ -47,7 +48,6 @@ export default function Analytics() {
 
   const confScores = history.filter(h => h.confidence != null).map(h => h.confidence);
   const avgConf = confScores.length ? Math.round((confScores.reduce((a, b) => a + b, 0) / confScores.length) * 100) : null;
-  const confColor = avgConf == null ? 'text-gray-400' : avgConf >= 85 ? 'text-green-600' : avgConf >= 60 ? 'text-amber-500' : 'text-red-500';
 
   const dailyCounts = useMemo(() => {
     const days = [];
@@ -78,6 +78,7 @@ export default function Analytics() {
           { icon: TrendingUp, label: L.thisWeek,          value: thisWeek.length,                         sub: 'transcripts',   color: 'var(--text-ink)' },
           { icon: Zap,        label: L.avgConfidence,     value: avgConf != null ? `${avgConf}%` : '—',   sub: 'speech clarity', color: avgConf == null ? 'var(--text-faded)' : avgConf >= 85 ? '#16A34A' : avgConf >= 60 ? '#D97706' : '#DC2626' },
           { icon: Star,       label: L.starred,           value: state.starredIds?.length || 0,           sub: 'saved items',   color: 'var(--text-ink)' },
+        // eslint-disable-next-line no-unused-vars
         ].map(({ icon: Icon, label, value, sub, color }) => (
           <div key={label} style={{ background: 'var(--surface)', borderRadius: 'var(--r-xl)', boxShadow: 'var(--shadow-sm)', padding: 20, transition: 'transform 0.15s, box-shadow 0.15s', cursor: 'default' }}
             onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = 'var(--shadow-hover)'; }}

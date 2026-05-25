@@ -51,7 +51,7 @@ export default function Settings() {
   const [previewingVoice, setPreviewingVoice] = useState(null);
   const previewAudioRef = useState(null);
 
-  const loadCache = async () => { try { setCacheStats(await api.getCacheStats()); } catch {} };
+  const loadCache = async () => { try { setCacheStats(await api.getCacheStats()); } catch { /* ignore */ } };  
   useEffect(() => { loadCache(); }, []);
 
 

@@ -21,6 +21,7 @@ export default function Dictionary() {
     const exists = dict.some(d => d.native.toLowerCase() === native.trim().toLowerCase());
     if (exists) showSuccess('Term updated');
     const updated = [
+      // eslint-disable-next-line react-hooks/purity
       { id: Date.now(), native: native.trim(), english: english.trim() },
       ...dict.filter(d => d.native.toLowerCase() !== native.trim().toLowerCase()),
     ];

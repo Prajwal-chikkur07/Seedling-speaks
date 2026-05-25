@@ -10,7 +10,7 @@ export default function PushToTalkRecorder() {
   const mediaRecorderRef = useRef(null);
   const chunksRef = useRef([]);
   const streamRef = useRef(null);
-  const [isHolding, setIsHolding] = useRef(false);
+  const isHolding = useRef(false);
   const [recordingTime, setRecordingTime] = useState(0);
   const recordingIntervalRef = useRef(null);
 
@@ -46,7 +46,7 @@ export default function PushToTalkRecorder() {
       recordingIntervalRef.current = setInterval(() => {
         setRecordingTime((prev) => prev + 1);
       }, 100);
-    } catch (err) {
+    } catch {
       showError('Microphone permission denied. Please enable microphone access.');
       isHolding.current = false;
     }
@@ -122,15 +122,18 @@ export default function PushToTalkRecorder() {
 
       recorder.stop();
     });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.sourceLanguage, state.targetLanguage, setField, setFields, setLoading, showError, stopMediaStream]);
 
   // Mouse/touch events for push-to-talk
+   
   const handlePointerDown = useCallback(() => {
     if (!isHolding.current) {
       startRecording();
     }
   }, [startRecording]);
 
+   
   const handlePointerUp = useCallback(async () => {
     if (isHolding.current) {
       await stopAndSend();

@@ -45,6 +45,7 @@ export default function AppHome() {
     try {
       const d = await toggleWidgetPower();
       setWidgetOn(d.enabled);
+    // eslint-disable-next-line no-empty
     } catch {}
     setWidgetLoading(false);
   };
@@ -140,6 +141,7 @@ export default function AppHome() {
 
         <p style={{ fontSize: 9, fontWeight: 600, letterSpacing: '0.18em', color: 'var(--text-faded)', textTransform: 'uppercase', marginBottom: 16 }}>{L.chooseMode}</p>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 16, marginBottom: 28 }}>
+          {/* eslint-disable-next-line no-unused-vars */}
           {FEATURES.map(({ icon: Icon, title, desc, path }) => (
             <button key={path} className="feature-card stagger-child" onClick={() => go(path)} style={{ background: CARD_COLORS[path], border: `1px solid ${CARD_BORDERS[path]}` }}>
               <div className="card-deco" />

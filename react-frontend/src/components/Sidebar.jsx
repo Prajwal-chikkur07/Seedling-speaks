@@ -7,6 +7,7 @@ import { useContinuousSession } from '../hooks/useContinuousSession';
 
 const SectionLabel = ({ label }) => <span className="section-label">{label}</span>;
 
+// eslint-disable-next-line no-unused-vars
 const NavBtn = ({ icon: Icon, label, badge, active, onClick }) => (
   <button onClick={onClick} className={`nav-item${active ? ' active' : ''}`}>
     <Icon className="w-4 h-4 shrink-0" strokeWidth={1.8} />
@@ -15,6 +16,7 @@ const NavBtn = ({ icon: Icon, label, badge, active, onClick }) => (
   </button>
 );
 
+// eslint-disable-next-line no-unused-vars
 const BottomNavBtn = ({ icon: Icon, label, active, onClick }) => (
   <button onClick={onClick} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 2, flex: 1, padding: '4px 0', color: active ? 'var(--saffron)' : 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer' }}>
     <Icon className="w-5 h-5" strokeWidth={active ? 2.2 : 1.6} />
@@ -31,7 +33,8 @@ export default function Sidebar({ isOpen, onClose, onOpen, topOffset = 0 }) {
   const is = (p) => location.pathname === p;
   const nav = (p) => () => { clearAll(); navigate(p); onClose?.(); };
   const handleLogout = async () => {
-    try { await signOut(); } catch {}
+     
+    try { await signOut(); } catch { /* sign-out errors are non-fatal */ }
     logout(); navigate('/auth');
   };
   const session = useContinuousSession();
