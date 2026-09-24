@@ -54,7 +54,8 @@ class NativeToEnglishSession(Base):
         Index('idx_n2e_lang_pair', 'original_language', 'target_language'),
     )
 
-    transcriptions = relationship("NativeToEnglishTranscription", back_populates="session", cascade="all, delete-orphan")
+    transcriptions = relationship("NativeToEnglishTranscription", back_populates="session", cascade="all, delete-orphan",
+                                  order_by="NativeToEnglishTranscription.created_at")
 
 
 class NativeToEnglishTranscription(Base):
@@ -94,7 +95,8 @@ class EnglishToNativeSession(Base):
         Index('idx_e2n_user_created', 'user_id', 'created_at'),
     )
 
-    translations = relationship("EnglishToNativeTranslation", back_populates="session", cascade="all, delete-orphan")
+    translations = relationship("EnglishToNativeTranslation", back_populates="session", cascade="all, delete-orphan",
+                                order_by="EnglishToNativeTranslation.created_at")
 
 
 class EnglishToNativeTranslation(Base):

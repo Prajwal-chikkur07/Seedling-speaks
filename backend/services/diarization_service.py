@@ -1,94 +1,103 @@
 """
-diarization_service.py — Speaker diarization using Sarvam AI's diarized_transcript field.
-Splits transcript into per-speaker segments with emotion detection.
+diarization_service.py — Split a transcript into per-speaker segments.
+Tries audio-based diarization first, then Gemini text splitting, then a sentence split.
 """
-import os
 import logging
 import re
 
+from services.audio_diarization import diarize_audio_file
+from services.gemini_client import GEMINI_API_KEY, generate_json
+from services.tts_service import MALE_VOICES, FEMALE_VOICES
+
 logger = logging.getLogger(__name__)
 
+MAX_SPEAKERS = 5
 
-def parse_diarized_transcript(sarvam_response: dict) -> list[dict]:
-    """
-    Parse Sarvam's diarized_transcript into speaker segments.
-    Returns list of: { speaker: "Person 1", text: "...", emotion: "neutral" }
-    """
-    diarized = sarvam_response.get("diarized_transcript")
 
-    if diarized and isinstance(diarized, list):
-        segments = []
-        for seg in diarized:
-            speaker_label = seg.get("speaker_id") or seg.get("speaker") or "Person 1"
-            # Normalize speaker label
-            if isinstance(speaker_label, int):
-                speaker_label = f"Person {speaker_label + 1}"
-            elif not str(speaker_label).startswith("Person"):
-                speaker_label = f"Person {speaker_label}"
-            text = seg.get("transcript") or seg.get("text") or ""
-            if text.strip():
-                segments.append({
-                    "speaker": speaker_label,
-                    "text": text.strip(),
-                    "emotion": "neutral",
-                    "start": seg.get("start", 0),
-                    "end": seg.get("end", 0),
-                })
+def diarize(transcript: str, audio_path: str | None = None, speaker_count: int = 0) -> tuple[list[dict], str]:
+    """
+    Returns (segments, method) where method is "audio", "gemini" or "fallback".
+    Each segment has speaker, text, emotion, start, end, gender and voice.
+    """
+    if audio_path:
+        segments = diarize_audio_file(audio_path, transcript)
         if segments:
-            return segments
+            return assign_speaker_voices(segments), "audio"
+        logger.warning("[diarize] Audio diarization returned no segments, falling back to Gemini text split")
 
-    # Fallback: parse from plain transcript if diarization not available
-    transcript = sarvam_response.get("transcript", "")
-    return _parse_from_text(transcript)
+    segments = _gemini_split(transcript, speaker_count)
+    if segments:
+        return assign_speaker_voices(segments), "gemini"
 
-
-def _parse_from_text(transcript: str) -> list[dict]:
-    """
-    Try to detect speaker turns from text patterns like:
-    'Person 1: ...' or 'Speaker A: ...' or just return as single speaker.
-    """
-    # Try to detect labeled speakers
-    pattern = re.compile(r'((?:Person|Speaker|Participant)\s*\d+|[A-Z][a-z]+)\s*:\s*(.+?)(?=(?:Person|Speaker|Participant)\s*\d+\s*:|[A-Z][a-z]+\s*:|$)', re.DOTALL)
-    matches = pattern.findall(transcript)
-
-    if len(matches) >= 2:
-        return [{"speaker": m[0].strip(), "text": m[1].strip(), "emotion": "neutral", "start": 0, "end": 0}
-                for m in matches if m[1].strip()]
-
-    # Single speaker fallback
-    if transcript.strip():
-        return [{"speaker": "Person 1", "text": transcript.strip(), "emotion": "neutral", "start": 0, "end": 0}]
-    return []
+    return assign_speaker_voices(_sentence_split(transcript, speaker_count)), "fallback"
 
 
-def detect_emotions_for_segments(segments: list[dict], gemini_key: str = None) -> list[dict]:
-    """Add emotion detection to each segment using Gemini."""
-    if not gemini_key or not segments:
-        return segments
+def _gemini_split(transcript: str, speaker_count: int) -> list[dict]:
+    if not GEMINI_API_KEY:
+        return []
+
+    if speaker_count >= 2:
+        speaker_instruction = (
+            f"IMPORTANT: There are EXACTLY {speaker_count} speakers. "
+            f"You MUST use exactly {speaker_count} different people: "
+            f"{', '.join([f'Person {i+1}' for i in range(speaker_count)])}."
+        )
+    else:
+        speaker_instruction = "Identify how many distinct speakers there are (2 to 5)."
+
+    prompt = f"""You are an expert conversation analyst.
+
+{speaker_instruction}
+
+Split this transcript into individual speaker turns.
+- Every sentence belongs to exactly one speaker
+- Short responses like "yes", "okay" are often a different speaker
+- Questions are usually answered by a different speaker
+- Detect emotion per segment: happy, neutral, serious, sad, angry, excited
+- Return ONLY a valid JSON array
+
+Format:
+[
+  {{"speaker": "Person 1", "text": "...", "emotion": "neutral"}},
+  {{"speaker": "Person 2", "text": "...", "emotion": "happy"}}
+]
+
+Transcript:
+{transcript}"""
 
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=gemini_key)
-        model = genai.GenerativeModel("gemini-2.5-flash")
-
-        # Batch all segments in one call
-        texts = "\n".join([f"{i+1}. {s['text'][:200]}" for i, s in enumerate(segments)])
-        prompt = (
-            f"For each numbered text below, detect the emotion. "
-            f"Reply with ONLY a comma-separated list of emotions in order, "
-            f"choosing from: happy, neutral, serious, sad, angry, excited.\n\n{texts}"
-        )
-        resp = model.generate_content(prompt)
-        emotions = [e.strip().lower() for e in resp.text.strip().split(",")]
-        valid = {"happy", "neutral", "serious", "sad", "angry", "excited"}
-
-        for i, seg in enumerate(segments):
-            if i < len(emotions) and emotions[i] in valid:
-                seg["emotion"] = emotions[i]
+        parsed = generate_json(prompt)
     except Exception as e:
-        logger.warning(f"[diarization] Emotion detection failed: {e}")
+        logger.warning(f"[diarize] Gemini split failed: {e}")
+        return []
+    if not isinstance(parsed, list):
+        return []
 
+    segments = []
+    for seg in parsed:
+        if not isinstance(seg, dict):
+            continue
+        text = str(seg.get("text", "")).strip()
+        if not text:
+            continue
+        num = int("".join(filter(str.isdigit, str(seg.get("speaker", "")))) or "1")
+        segments.append({
+            "speaker": f"Person {max(1, min(num, MAX_SPEAKERS))}",
+            "text": text,
+            "emotion": str(seg.get("emotion", "neutral")).lower(),
+            "start": 0,
+            "end": 0,
+        })
     return segments
+
+
+def _sentence_split(transcript: str, speaker_count: int) -> list[dict]:
+    n_speakers = speaker_count if 2 <= speaker_count <= MAX_SPEAKERS else 2
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", transcript) if s.strip()]
+    return [
+        {"speaker": f"Person {(i % n_speakers) + 1}", "text": sent, "emotion": "neutral", "start": 0, "end": 0}
+        for i, sent in enumerate(sentences)
+    ]
 
 
 def assign_speaker_voices(segments: list[dict]) -> list[dict]:
@@ -97,9 +106,6 @@ def assign_speaker_voices(segments: list[dict]) -> list[dict]:
     If gender was detected by audio analysis, use it.
     Otherwise alternate male/female.
     """
-    MALE_VOICES   = ["abhilash", "karun", "arvind", "amol"]
-    FEMALE_VOICES = ["anushka",  "vidya", "pavithra", "meera"]
-
     speaker_map      = {}
     male_voice_idx   = 0
     female_voice_idx = 0

@@ -3,6 +3,8 @@ import logging
 import subprocess
 import tempfile
 
+from services.config import FFMPEG_TIMEOUT
+
 logger = logging.getLogger(__name__)
 
 def get_audio_duration(audio_file_path: str) -> float:
@@ -18,7 +20,7 @@ def get_audio_duration(audio_file_path: str) -> float:
             '-of', 'default=noprint_wrappers=1:nokey=1',
             audio_file_path
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=30)
         duration = float(result.stdout.strip())
         return duration
     except FileNotFoundError:
@@ -43,6 +45,7 @@ def split_audio_into_chunks(audio_file_path: str, chunk_duration_seconds: int = 
     Returns:
         List of paths to chunk files
     """
+    chunk_paths = []
     try:
         logger.info(f"Splitting audio file: {audio_file_path}")
         
@@ -50,7 +53,6 @@ def split_audio_into_chunks(audio_file_path: str, chunk_duration_seconds: int = 
         total_duration = get_audio_duration(audio_file_path)
         logger.info(f"Total audio duration: {total_duration:.2f}s")
         
-        chunk_paths = []
         chunk_number = 0
         start_time = 0
         
@@ -76,7 +78,7 @@ def split_audio_into_chunks(audio_file_path: str, chunk_duration_seconds: int = 
                 chunk_path
             ]
             
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=FFMPEG_TIMEOUT)
             
             if result.returncode != 0:
                 logger.error(f"ffmpeg error: {result.stderr}")

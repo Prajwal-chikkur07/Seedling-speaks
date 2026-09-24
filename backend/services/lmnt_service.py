@@ -9,12 +9,13 @@ import requests
 from pathlib import Path
 from dotenv import load_dotenv
 
+from services.config import LMNT_BASE_URL as LMNT_BASE
+
 load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env")
 
 logger = logging.getLogger(__name__)
 
 LMNT_API_KEY = os.getenv("LMNT_API_KEY")
-LMNT_BASE = "https://api.lmnt.com/v1"
 
 # LMNT supported languages (as of 2024)
 LMNT_LANG_MAP = {
@@ -109,21 +110,6 @@ def delete_voice(voice_id: str):
         logger.info(f"[lmnt] Voice deleted: {voice_id}")
     except Exception as e:
         logger.warning(f"[lmnt] Failed to delete voice {voice_id}: {e}")
-
-
-def clone_and_speak(audio_sample_path: str, text: str, language: str) -> str:
-    """
-    Full pipeline: clone voice from sample → synthesize text → delete clone.
-    Returns path to generated audio.
-    """
-    voice_id = None
-    try:
-        voice_id = clone_voice(audio_sample_path)
-        audio_path = synthesize(text, voice_id, language)
-        return audio_path
-    finally:
-        if voice_id:
-            delete_voice(voice_id)
 
 
 def is_available() -> bool:

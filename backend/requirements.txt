@@ -12,7 +12,10 @@ numpy>=1.26.4
 sqlalchemy>=2.0
 psycopg2-binary
 PyJWT
+cryptography  # PyJWT needs it to verify Clerk RS256 tokens
 librosa>=0.10
 soundfile
 # Voice cloning — install manually: pip install TTS
 # TTS  ← uncomment after: pip install TTS
+# Semantic translation cache (optional) — lazily imported; heavy, so not installed by default:
+# sentence-transformers

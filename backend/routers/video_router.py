@@ -7,27 +7,31 @@ GET  /api/video/download/{id}   → download subtitled video
 GET  /api/video/srt/{id}        → download SRT file
 """
 import os
+import time
 import uuid
 import asyncio
 import logging
 from pathlib import Path
 
 from fastapi import APIRouter, UploadFile, File, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 import aiofiles
+
+from services.config import TEMP_VIDEO_DIR as TEMP_DIR, UPLOAD_CHUNK_SIZE as CHUNK_SIZE
+from services.video_service import process_video_subtitles, check_ffmpeg
 
 router = APIRouter(prefix="/api/video", tags=["video"])
 logger = logging.getLogger(__name__)
 
-TEMP_DIR = Path("temp_video")
 TEMP_DIR.mkdir(exist_ok=True)
 
 SUPPORTED_EXT = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
 MAX_VIDEO_SIZE = 200 * 1024 * 1024  # 200 MB
-CHUNK_SIZE = 1024 * 1024            # 1 MB read chunks
+JOB_TTL_SECONDS = 60 * 60
 
 _jobs: dict = {}
+_tasks: set = set()  # strong refs so running jobs aren't garbage-collected
 
 
 class SubtitleRequest(BaseModel):
@@ -43,6 +47,19 @@ def _cleanup(path: str):
         pass
 
 
+def _prune_jobs():
+    """Drop non-running jobs untouched for JOB_TTL_SECONDS and delete their files."""
+    cutoff = time.time() - JOB_TTL_SECONDS
+    for video_id, job in list(_jobs.items()):
+        if job["status"] == "processing" or job["updated_at"] > cutoff:
+            continue
+        _cleanup(job["path"])
+        result = job.get("result") or {}
+        _cleanup(result.get("srt_path"))
+        _cleanup(result.get("vtt_path"))
+        del _jobs[video_id]
+
+
 @router.post("/upload")
 async def upload_video(file: UploadFile = File(...)):
     filename = file.filename or "video.mp4"
@@ -50,6 +67,7 @@ async def upload_video(file: UploadFile = File(...)):
     if ext not in SUPPORTED_EXT:
         raise HTTPException(400, f"Unsupported format '{ext}'. Use: {', '.join(SUPPORTED_EXT)}")
 
+    _prune_jobs()
     video_id = str(uuid.uuid4())[:12]
     save_path = str(TEMP_DIR / f"{video_id}{ext}")
     file_size = 0
@@ -68,7 +86,8 @@ async def upload_video(file: UploadFile = File(...)):
         _cleanup(save_path)
         raise HTTPException(500, str(e))
 
-    _jobs[video_id] = {"status": "uploaded", "path": save_path, "result": None, "error": None}
+    _jobs[video_id] = {"status": "uploaded", "path": save_path, "result": None, "error": None,
+                       "updated_at": time.time()}
     logger.info(f"[video] uploaded {filename} → {video_id} ({file_size/1024:.1f}KB)")
     return {"video_id": video_id, "filename": filename, "size_kb": round(file_size / 1024, 1)}
 
@@ -81,10 +100,15 @@ async def start_subtitle_job(req: SubtitleRequest):
     if job["status"] == "processing":
         raise HTTPException(409, "Already processing.")
 
+    previous = job.get("result") or {}
+    _cleanup(previous.get("srt_path"))
+    _cleanup(previous.get("vtt_path"))
     job.update({"status": "processing", "error": None, "result": None,
-                "target_language": req.target_language})
+                "target_language": req.target_language, "updated_at": time.time()})
 
-    asyncio.create_task(_run_job(req.video_id, job["path"], req.target_language))
+    task = asyncio.create_task(_run_job(req.video_id, job["path"], req.target_language))
+    _tasks.add(task)
+    task.add_done_callback(_tasks.discard)
     return {"video_id": req.video_id, "status": "processing"}
 
 
@@ -93,8 +117,7 @@ async def _run_job(video_id: str, video_path: str, target_language: str):
     if not job:
         return
     try:
-        from services.video_service import process_video_subtitles, check_ffmpeg
-        if not check_ffmpeg():
+        if not await asyncio.to_thread(check_ffmpeg):
             raise RuntimeError("ffmpeg is not installed on this server.")
         result = await asyncio.to_thread(process_video_subtitles, video_path, target_language)
         job["status"] = "done"
@@ -104,6 +127,8 @@ async def _run_job(video_id: str, video_path: str, target_language: str):
         logger.error(f"[video] {video_id} failed: {e}")
         job["status"] = "error"
         job["error"] = str(e)
+    finally:
+        job["updated_at"] = time.time()
 
 
 @router.get("/status/{video_id}")
@@ -156,7 +181,6 @@ def get_vtt(video_id: str):
     vtt_path = job["result"].get("vtt_path", "")
     if not vtt_path or not os.path.exists(vtt_path):
         raise HTTPException(404, "VTT file not found.")
-    from fastapi.responses import Response
     with open(vtt_path, "r", encoding="utf-8") as f:
         content = f.read()
     return Response(content=content, media_type="text/vtt", headers={"Access-Control-Allow-Origin": "*"})

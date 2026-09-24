@@ -8,25 +8,24 @@ import json
 import math
 import logging
 import subprocess
-from pathlib import Path
+
+from services.config import FFMPEG_TIMEOUT, TEMP_VIDEO_DIR as TEMP_DIR
+from services.sarvam_client import translate_speech_to_text, translate_text
 
 logger = logging.getLogger(__name__)
-
-TEMP_DIR = Path("temp_video")
-TEMP_DIR.mkdir(exist_ok=True)
 
 CHUNK_DURATION = 6.0  # seconds per subtitle segment
 
 
 def check_ffmpeg():
     try:
-        subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True)
+        subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True, timeout=10)
         return True
     except Exception:
         return False
 
 
-def _run(cmd: list, label: str, timeout: int = 180):
+def _run(cmd: list, label: str, timeout: int = FFMPEG_TIMEOUT):
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     if result.returncode != 0:
         raise RuntimeError(f"{label} failed: {result.stderr[:400]}")
@@ -97,8 +96,6 @@ def process_video_subtitles(video_path: str, target_language: str) -> dict:
     5. Build SRT file
     6. Burn subtitles into video with ffmpeg
     """
-    from services.sarvam_client import translate_speech_to_text, translate_text
-
     chunk_paths = []
     srt_path = None
 
@@ -139,12 +136,11 @@ def process_video_subtitles(video_path: str, target_language: str) -> dict:
                 translated = original
             else:
                 try:
-                    res = translate_text(
+                    translated = translate_text(
                         text=original,
                         source_language=source_language,
                         target_language=target_language,
                     )
-                    translated = res.get("translated_text", res.get("text", original)) if isinstance(res, dict) else str(res)
                 except Exception as e:
                     logger.warning(f"[subtitle] chunk {i} translate failed: {e}")
                     translated = original

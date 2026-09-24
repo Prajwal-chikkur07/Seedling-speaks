@@ -36,18 +36,24 @@ if _raw_url.startswith("postgresql://") and "+psycopg2" not in _raw_url:
 DATABASE_URL = _raw_url
 
 # ── Engine ────────────────────────────────────────────────────────────────────
-# Use SSL only for cloud providers (Render, Supabase, Neon, etc.)
-# Local postgres (localhost / 127.0.0.1) doesn't support SSL — skip it
-_is_local = any(h in DATABASE_URL for h in ["localhost", "127.0.0.1"])
-_connect_args = {} if _is_local else {"sslmode": "require"}
+IS_SQLITE = DATABASE_URL.startswith("sqlite")
 
-engine = create_engine(
-    DATABASE_URL,
-    pool_pre_ping=True,
-    pool_size=5,
-    max_overflow=10,
-    connect_args=_connect_args,
-)
+if IS_SQLITE:
+    # Used by the test suite; sqlite has no SSL or connection-pool sizing.
+    engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+else:
+    # Use SSL only for cloud providers (Render, Supabase, Neon, etc.)
+    # Local postgres (localhost / 127.0.0.1) doesn't support SSL — skip it
+    _is_local = any(h in DATABASE_URL for h in ["localhost", "127.0.0.1"])
+    _connect_args = {} if _is_local else {"sslmode": "require"}
+
+    engine = create_engine(
+        DATABASE_URL,
+        pool_pre_ping=True,
+        pool_size=5,
+        max_overflow=10,
+        connect_args=_connect_args,
+    )
 
 # ── Session factory ───────────────────────────────────────────────────────────
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -74,9 +80,11 @@ def init_db():
         # Quick connectivity check
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
-        # Migrate: drop removed columns from english_to_native_translations
-        _migrate_e2n_translations()
-        logger.info("PostgreSQL connected and tables verified.")
+        # Migrate: drop removed columns from english_to_native_translations.
+        # Postgres-only syntax; fresh sqlite (tests) never had these columns.
+        if not IS_SQLITE:
+            _migrate_e2n_translations()
+        logger.info("Database connected and tables verified.")
     except Exception as e:
         logger.error(f"Database init failed: {e}")
         raise

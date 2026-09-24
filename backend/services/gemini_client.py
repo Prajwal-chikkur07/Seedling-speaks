@@ -6,6 +6,8 @@ import requests
 import google.generativeai as genai
 from dotenv import load_dotenv
 
+from services.config import GEMINI_MODEL, GEMINI_LITE_MODEL, GEMINI_TIMEOUT
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -24,6 +26,29 @@ def _strip_md_json(raw: str) -> str:
     raw = re.sub(r'^```\s*', '', raw)
     raw = re.sub(r'\s*```$', '', raw)
     return raw.strip()
+
+
+def generate_text(contents, model_name: str = GEMINI_MODEL) -> str:
+    """Single Gemini call with a timeout. `contents` is a prompt or a list of parts."""
+    model = genai.GenerativeModel(model_name)
+    response = model.generate_content(contents, request_options={"timeout": GEMINI_TIMEOUT})
+    return response.text.strip()
+
+
+def generate_json(contents, model_name: str = GEMINI_MODEL):
+    return json.loads(_strip_md_json(generate_text(contents, model_name)))
+
+
+class RetoneError(Exception):
+    """Retone provider failed or is not configured."""
+
+
+class RetoneQuotaError(RetoneError):
+    """Retone provider hit its quota or rate limit."""
+
+    def __init__(self, provider: str):
+        super().__init__(f"{provider} retone quota or rate limit reached")
+        self.provider = provider
 
 
 REWRITE_ENGINE_MASTER_PROMPT = """You are SeedlingSpeaks Rewrite Engine — a high-precision communication optimizer.
@@ -159,28 +184,10 @@ def _truncate_summary(text: str) -> str:
     return text[:300] + "..."
 
 
-def _local_tone_rewrite(text: str, tone: str, user_override: str = None) -> str:
-    """Small local fallback to keep tone rewrite functional without external fallback services."""
-    if user_override:
-        return text
-
-    if tone == "Email Formal":
-        return f"Subject: Message\n\nDear Sir/Madam,\n\n{text.strip()}\n\nYours sincerely,"
-    if tone == "Email Casual":
-        return f"Subject: Quick note\n\nHi there,\n\n{text.strip()}\n\nCheers,"
-    if tone == "Slack":
-        return text.strip()
-    if tone == "LinkedIn":
-        return f"{text.strip()}\n\nWhat do you think?\n\n#leadership #communication #growth"
-    if tone in {"WhatsApp", "WhatsApp Business"}:
-        return text.strip()
-    return text
-
-
 def _openrouter_tone_rewrite(text: str, tone_option: str, user_override: str = None, custom_vocabulary: list = None) -> str:
     """Fallback retone path using OpenRouter chat completions."""
     if not OPENROUTER_API_KEY:
-        raise Exception("OPENROUTER_API_KEY is not set")
+        raise RetoneError("OPENROUTER_API_KEY is not set")
 
     if user_override:
         system_prompt = f"""You are an elite communication strategist and editor. Your job is to produce ONE single ready-to-send message using this custom tone: "{user_override}".
@@ -202,40 +209,37 @@ RULES:
         pairs = ", ".join([f'"{v["native"]}" -> keep as "{v["english"]}"' for v in custom_vocabulary[:20]])
         vocab_hint = f"\n\nCUSTOM VOCABULARY (preserve these terms exactly): {pairs}"
 
-    prompt = f"""{system_prompt}{vocab_hint}
-
-ORIGINAL TEXT:
-{text}
-
-Return ONLY the final rewritten output."""
-
     logger.info(
         f"OpenRouter rewrite request: tone='{tone_option}', model='{OPENROUTER_REWRITE_MODEL}', text='{text[:80]}'"
     )
-    response = requests.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "http://localhost:5174",
-            "X-Title": "SeedlingSpeaks",
-        },
-        json={
-            "model": OPENROUTER_REWRITE_MODEL,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"{vocab_hint}\n\nORIGINAL TEXT:\n{text}\n\nReturn ONLY the final rewritten output.".strip()},
-            ],
-            "max_tokens": 350,
-            "temperature": 0.35,
-            "top_p": 0.9,
-        },
-        timeout=90,
-    )
+    try:
+        response = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "http://localhost:5174",
+                "X-Title": "SeedlingSpeaks",
+            },
+            json={
+                "model": OPENROUTER_REWRITE_MODEL,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"{vocab_hint}\n\nORIGINAL TEXT:\n{text}\n\nReturn ONLY the final rewritten output.".strip()},
+                ],
+                "max_tokens": 350,
+                "temperature": 0.35,
+                "top_p": 0.9,
+            },
+            timeout=90,
+        )
+    except requests.RequestException as e:
+        raise RetoneError(f"OpenRouter request failed: {e}") from e
 
+    if response.status_code == 429 or (response.status_code >= 400 and _is_quota_error(response.text)):
+        raise RetoneQuotaError("OpenRouter")
     if response.status_code >= 400:
-        detail = response.text[:500]
-        raise Exception(f"OpenRouter retone failed: {response.status_code} {detail}")
+        raise RetoneError(f"OpenRouter retone failed: {response.status_code} {response.text[:500]}")
 
     data = response.json()
     result = ""
@@ -248,9 +252,10 @@ Return ONLY the final rewritten output."""
         )
 
     if not result:
-        raise Exception("OpenRouter retone returned an empty response")
+        raise RetoneError("OpenRouter retone returned an empty response")
 
     return result
+
 
 
 def summarize_transcript(text: str) -> str:
@@ -262,8 +267,7 @@ Output ONLY the summary, no labels, no markdown.
 
 TRANSCRIPT: {text}"""
     try:
-        model = genai.GenerativeModel('gemini-2.5-flash')
-        return model.generate_content(prompt).text.strip()
+        return generate_text(prompt)
     except Exception as e:
         logger.warning(f"Summarize failed: {e}")
         return _truncate_summary(text)
@@ -285,9 +289,7 @@ def generate_meeting_notes(text: str) -> dict:
 
 TRANSCRIPT: {text}"""
     try:
-        model = genai.GenerativeModel('gemini-2.5-flash')
-        raw = _strip_md_json(model.generate_content(prompt).text)
-        return json.loads(raw)
+        return generate_json(prompt)
     except Exception as e:
         logger.warning(f"Meeting notes failed: {e}")
         return {**empty, "summary": text[:200]}
@@ -308,8 +310,7 @@ QUESTION: {question}
 
 ANSWER:"""
     try:
-        model = genai.GenerativeModel('gemini-2.5-flash')
-        return model.generate_content(prompt).text.strip()
+        return generate_text(prompt)
     except Exception as e:
         logger.warning(f"Q&A failed: {e}")
         if _is_quota_error(e):
@@ -327,9 +328,7 @@ Use "positive", "neutral", or "negative" for sentiment. Score is 0-100.
 
 TEXT: {text}"""
     try:
-        model = genai.GenerativeModel('gemini-2.5-flash')
-        raw = _strip_md_json(model.generate_content(prompt).text)
-        return json.loads(raw)
+        return generate_json(prompt)
     except Exception as e:
         logger.warning(f"Sentiment analysis failed: {e}")
         if _is_quota_error(e):
@@ -365,9 +364,7 @@ Respond ONLY with JSON (no markdown):
 
 TEXT: {native_text}"""
     try:
-        model = genai.GenerativeModel('gemini-2.5-flash')
-        raw = _strip_md_json(model.generate_content(prompt).text)
-        return json.loads(raw)
+        return generate_json(prompt)
     except Exception as e:
         logger.warning(f"Back-translate failed: {e}")
         return {"back_translation": "", "accuracy_score": 0, "notes": ""}
@@ -422,9 +419,7 @@ Respond ONLY with JSON (no markdown):
 
 TEXT: {text}"""
     try:
-        model = genai.GenerativeModel('gemini-2.5-flash')
-        raw = _strip_md_json(model.generate_content(prompt).text)
-        return json.loads(raw)
+        return generate_json(prompt)
     except Exception as e:
         logger.warning(f"Tone confidence failed: {e}")
         if _is_quota_error(e):
@@ -441,12 +436,6 @@ def vision_translate_image(image_bytes: bytes, image_mime: str, target_language:
     if not GEMINI_API_KEY:
         raise Exception("GEMINI_API_KEY is not set")
 
-    LANG_NAMES = {
-        'hi-IN': 'Hindi', 'bn-IN': 'Bengali', 'ta-IN': 'Tamil', 'te-IN': 'Telugu',
-        'ml-IN': 'Malayalam', 'mr-IN': 'Marathi', 'gu-IN': 'Gujarati',
-        'kn-IN': 'Kannada', 'pa-IN': 'Punjabi', 'or-IN': 'Odia',
-        'en-IN': 'English',
-    }
     lang_name = LANG_NAMES.get(target_language, target_language)
 
     prompt = f"""You are an expert OCR and translation engine. Analyze this image carefully.
@@ -487,14 +476,8 @@ Coordinate rules:
 - Output ONLY the JSON array, nothing else"""
 
     try:
-        model = genai.GenerativeModel('gemini-2.5-flash-lite')
         image_part = {"mime_type": image_mime, "data": image_bytes}
-        response = model.generate_content(
-            [prompt, image_part],
-            request_options={"timeout": 60},
-        )
-        raw = _strip_md_json(response.text)
-        result = json.loads(raw)
+        result = generate_json([prompt, image_part], GEMINI_LITE_MODEL)
 
         cleaned = []
         for item in result:
@@ -528,8 +511,7 @@ Respond with ONLY the tone name, nothing else.
 
 TEXT: {text}"""
     try:
-        model = genai.GenerativeModel('gemini-2.5-flash')
-        result = model.generate_content(prompt).text.strip()
+        result = generate_text(prompt)
         valid = ["Email Formal", "Email Casual", "Slack", "LinkedIn", "WhatsApp Business"]
         return result if result in valid else "Email Formal"
     except Exception as e:
@@ -561,7 +543,7 @@ def rewrite_text_tone(text: str, tone_option: str, user_override: str = None, cu
         logger.warning("Gemini key missing for retone. Falling back to OpenRouter.")
         return _openrouter_tone_rewrite(text, tone_option, user_override, custom_vocabulary)
     if not GEMINI_API_KEY:
-        raise Exception("Neither GEMINI_API_KEY nor OPENROUTER_API_KEY is set")
+        raise RetoneError("Neither GEMINI_API_KEY nor OPENROUTER_API_KEY is set")
 
     if user_override:
         system_prompt = f"""You are an elite communication strategist and editor. Your job is to produce ONE single ready-to-send message using this custom tone: "{user_override}".
@@ -593,7 +575,7 @@ ORIGINAL TEXT:
 REWRITTEN OUTPUT:"""
 
     logger.info(f"Gemini rewrite request: tone='{tone_option}', text='{text[:80]}'")
-    model = genai.GenerativeModel('gemini-2.5-flash-lite')
+    model = genai.GenerativeModel(GEMINI_LITE_MODEL)
 
     try:
         response = model.generate_content(prompt, request_options={"timeout": 30})
@@ -610,10 +592,8 @@ REWRITTEN OUTPUT:"""
             if OPENROUTER_API_KEY:
                 logger.warning("Gemini retone unavailable. Falling back to OpenRouter.")
                 return _openrouter_tone_rewrite(text, tone_option, user_override, custom_vocabulary)
-            raise Exception("Gemini retone unavailable: quota or rate limit reached and no OpenRouter fallback is configured")
-        if hasattr(e, 'message'):
-            raise Exception(f"Gemini error: {e.message}")
-        raise Exception(f"Gemini retone failed: {str(e)}")
+            raise RetoneQuotaError("Gemini") from e
+        raise RetoneError(f"Gemini retone failed: {e}") from e
 
 
 def gemini_translate_text(text: str, source_language: str, target_language: str) -> str:
@@ -630,9 +610,7 @@ Return ONLY the translated text.
 TEXT:
 {text}"""
 
-    model = genai.GenerativeModel('gemini-2.5-flash')
-    response = model.generate_content(prompt)
-    return response.text.strip()
+    return generate_text(prompt)
 
 
 # ── Advanced Neural Translation ───────────────────────────────────────────────
@@ -690,10 +668,7 @@ def advanced_translate(
     )
 
     try:
-        model = genai.GenerativeModel('gemini-2.5-flash')
-        response = model.generate_content(prompt)
-        raw = _strip_md_json(response.text)
-        result = json.loads(raw)
+        result = generate_json(prompt)
 
         # Validate required fields
         if "final_translation" not in result or not result["final_translation"]:
@@ -710,17 +685,3 @@ def advanced_translate(
         logger.error(f"[advanced_translate] failed: {e}")
         raise
 
-
-def advanced_translate_text(text: str, target_language: str, glossary: dict | None = None) -> str:
-    """
-    Convenience wrapper — returns just the translated string.
-    Falls back to basic Sarvam translation on failure.
-    """
-    try:
-        result = advanced_translate(text, target_language, glossary)
-        return result["final_translation"]
-    except Exception as e:
-        logger.warning(f"[advanced_translate_text] Gemini failed, falling back: {e}")
-        # Fallback to Sarvam
-        from services.sarvam_client import translate_text as sarvam_translate
-        return sarvam_translate(text, source_language="en-IN", target_language=target_language)

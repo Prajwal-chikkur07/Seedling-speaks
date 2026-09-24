@@ -1,10 +1,25 @@
 import os
-import requests
+import base64
 import logging
+import subprocess
+import tempfile
+import time
+from concurrent.futures import ThreadPoolExecutor
 from http.client import IncompleteRead
 from pathlib import Path
+
+import requests
 from dotenv import load_dotenv
+
 from services.audio_utils import get_audio_duration, split_audio_into_chunks, cleanup_chunks
+from services.config import (
+    AUDIO_MIME_TYPES,
+    SARVAM_BASE_URL,
+    SARVAM_STT_MODEL,
+    SARVAM_STT_TRANSLATE_MODEL,
+    SARVAM_TRANSLATE_MODEL,
+)
+from services.gemini_client import GEMINI_API_KEY, gemini_translate_text, generate_text
 from services.translation_cache import get_cached, store_translation
 
 # Load .env from the backend directory explicitly
@@ -15,6 +30,11 @@ logger = logging.getLogger(__name__)
 
 SARVAM_API_KEY = os.getenv("SARVAM_API_KEY")
 MAX_AUDIO_DURATION = 25  # Sarvam supports up to 30 seconds, use 25 for safety
+
+
+class TranslationError(Exception):
+    """Every translation provider failed for a piece of text."""
+
 
 def translate_speech_to_text(audio_file_path: str, content_type: str = "audio/wav") -> dict:
     """
@@ -35,7 +55,6 @@ def translate_speech_to_text(audio_file_path: str, content_type: str = "audio/wa
         chunk_paths = split_audio_into_chunks(audio_file_path, chunk_duration_seconds=MAX_AUDIO_DURATION)
         logger.info(f"Splitting into {len(chunk_paths)} chunks...")
 
-        from concurrent.futures import ThreadPoolExecutor
         try:
             with ThreadPoolExecutor(max_workers=min(len(chunk_paths), 10)) as executor:
                 futures = [executor.submit(_process_single_audio, path, "audio/wav") for path in chunk_paths]
@@ -55,36 +74,22 @@ def translate_speech_to_text(audio_file_path: str, content_type: str = "audio/wa
 def _transcribe_with_gemini(audio_file_path: str) -> dict:
     """Fallback: use Google Gemini to transcribe audio when Sarvam fails."""
     try:
-        GEMINI_KEY = os.getenv("GEMINI_API_KEY")
-        if not GEMINI_KEY:
+        if not GEMINI_API_KEY:
             raise Exception("GEMINI_API_KEY not set")
-
-        import google.generativeai as genai
-        genai.configure(api_key=GEMINI_KEY)
-        model = genai.GenerativeModel("gemini-2.5-flash")
 
         with open(audio_file_path, "rb") as f:
             audio_bytes = f.read()
 
-        # Determine mime type from extension
         ext = os.path.splitext(audio_file_path)[1].lower()
-        mime_map = {
-            ".wav": "audio/wav", ".webm": "audio/webm", ".mp3": "audio/mpeg",
-            ".m4a": "audio/mp4", ".ogg": "audio/ogg", ".flac": "audio/flac",
-        }
-        mime_type = mime_map.get(ext, "audio/webm")
-
-        import base64
+        mime_type = AUDIO_MIME_TYPES.get(ext, "audio/webm")
         audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
 
-        response = model.generate_content([
+        transcript = generate_text([
             "Transcribe the following audio to English text. "
             "If the speaker is not speaking English, translate it to English. "
             "Return ONLY the transcribed/translated text, nothing else.",
             {"mime_type": mime_type, "data": audio_b64},
         ])
-
-        transcript = response.text.strip()
         logger.info(f"Gemini audio transcription: {transcript[:100]}")
         return {"transcript": transcript, "confidence": None, "source_language": "en-IN"}
     except Exception as e:
@@ -97,7 +102,6 @@ def _convert_to_wav(audio_file_path: str) -> str | None:
     Converts any audio format to 16kHz mono WAV using ffmpeg.
     Returns the new WAV path, or None if ffmpeg is unavailable.
     """
-    import subprocess, tempfile
     wav_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
     wav_path = wav_file.name
     wav_file.close()
@@ -127,8 +131,8 @@ def _process_single_audio(audio_file_path: str, content_type: str) -> dict:
     Converts to WAV first, retries up to 3 times on connection errors.
     Returns dict with 'transcript', 'native_transcript', and 'confidence' keys.
     """
-    url_translate = "https://api.sarvam.ai/speech-to-text-translate"
-    url_native = "https://api.sarvam.ai/speech-to-text"
+    url_translate = f"{SARVAM_BASE_URL}/speech-to-text-translate"
+    url_native = f"{SARVAM_BASE_URL}/speech-to-text"
     headers = {"api-subscription-key": SARVAM_API_KEY}
 
     # Convert to WAV for best Sarvam compatibility
@@ -160,14 +164,13 @@ def _process_single_audio(audio_file_path: str, content_type: str) -> dict:
                 last_exc = e
                 logger.warning(f"Sarvam attempt {attempt}/3 failed on {url}: {e}")
                 if attempt < 3:
-                    import time; time.sleep(1.5 * attempt)
+                    time.sleep(1.5 * attempt)
         raise Exception(f"Sarvam connection failed after 3 attempts on {url}: {last_exc}")
 
-    from concurrent.futures import ThreadPoolExecutor
     try:
         with ThreadPoolExecutor(max_workers=2) as executor:
-            fut_trans = executor.submit(_make_req, url_translate, "saaras:v2.5")
-            fut_native = executor.submit(_make_req, url_native, "saaras:v3")
+            fut_trans = executor.submit(_make_req, url_translate, SARVAM_STT_TRANSLATE_MODEL)
+            fut_native = executor.submit(_make_req, url_native, SARVAM_STT_MODEL)
             
             resp_trans = fut_trans.result()
             resp_native = fut_native.result()
@@ -254,14 +257,14 @@ def _translate_single(text: str, source_language: str, target_language: str) -> 
     # ── Cache miss: try Sarvam first ──────────────────────────────────────
     if SARVAM_API_KEY:
         try:
-            url = "https://api.sarvam.ai/translate"
+            url = f"{SARVAM_BASE_URL}/translate"
             payload = {
                 "input": text,
                 "source_language_code": source_language,
                 "target_language_code": target_language,
                 "speaker_gender": "Male",
                 "mode": "formal",
-                "model": "mayura:v1",
+                "model": SARVAM_TRANSLATE_MODEL,
                 "enable_preprocessing": True,
             }
             headers = {
@@ -292,12 +295,10 @@ def _translate_single(text: str, source_language: str, target_language: str) -> 
 
     # ── Fallback: Gemini ──────────────────────────────────────────────────
     try:
-        from services.gemini_client import gemini_translate_text
         logger.info(f"Using Gemini fallback for {target_language}")
         result = gemini_translate_text(text, source_language, target_language)
-        store_translation(text, target_language, result)
-        return result
     except Exception as e:
         logger.error(f"Gemini fallback also failed: {e}")
-        # Return original text rather than crashing — caller can handle gracefully
-        return text
+        raise TranslationError("Translation failed") from e
+    store_translation(text, target_language, result)
+    return result

@@ -82,7 +82,7 @@ def share_to_linkedin(text: str, access_token: str = None, person_urn: str = Non
             }
         }
         
-        response = requests.post(url, json=payload, headers=headers)
+        response = requests.post(url, json=payload, headers=headers, timeout=20)
         
         if response.status_code in [200, 201]:
             data = response.json()
@@ -202,7 +202,7 @@ def exchange_code_for_token(code: str, client_id: str, client_secret: str, redir
         "redirect_uri": redirect_uri
     }
     
-    response = requests.post(url, data=payload)
+    response = requests.post(url, data=payload, timeout=20)
     
     if response.status_code == 200:
         return response.json()
@@ -226,7 +226,7 @@ def get_linkedin_profile(access_token: str) -> dict:
         "Authorization": f"Bearer {access_token}"
     }
     
-    response = requests.get(url, headers=headers)
+    response = requests.get(url, headers=headers, timeout=20)
     
     if response.status_code == 200:
         data = response.json()
