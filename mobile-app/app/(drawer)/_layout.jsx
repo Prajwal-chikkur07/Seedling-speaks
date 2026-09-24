@@ -9,6 +9,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS } from '../../src/constants/colors';
 import { DrawerContext } from '../../src/context/DrawerContext';
 import FloatingAssistant from '../../src/components/FloatingAssistant';
+import { APP_VERSION } from '../../src/constants/app';
 
 const DRAWER_WIDTH = 300;
 
@@ -108,7 +109,7 @@ function DrawerContent({ closeDrawer }) {
 
         <View style={ds.footer}>
           <Image source={require('../../assets/logo.png')} style={ds.footerLogo} />
-          <Text style={ds.footerText}>SeedlingSpeaks v2.5</Text>
+          <Text style={ds.footerText}>SeedlingSpeaks v{APP_VERSION}</Text>
         </View>
       </ScrollView>
     </View>

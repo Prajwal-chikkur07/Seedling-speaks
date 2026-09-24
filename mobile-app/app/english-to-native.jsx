@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import {
   View, Text, TouchableOpacity, TextInput, ScrollView,
-  StyleSheet, ActivityIndicator, Alert, Dimensions,
+  StyleSheet, ActivityIndicator, Alert,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
@@ -13,18 +13,17 @@ import { useApp } from '../src/context/AppContext';
 import api from '../src/services/api';
 
 const LANG_ENTRIES = Object.entries(TARGET_LANGUAGES);
-const { width } = Dimensions.get('window');
 
 const QUICK_LANGS = ['Hindi', 'Tamil', 'Telugu', 'Bengali', 'Kannada'];
 
 export default function EnglishToNativeScreen() {
   const insets = useSafeAreaInsets();
-  const { addHistory, incrementUsage } = useApp();
+  const { state, addHistory, incrementUsage } = useApp();
 
   const [inputText,     setInputText]     = useState('');
   const [translatedText, setTranslatedText] = useState('');
-  const [targetLang,    setTargetLang]    = useState('hi-IN');
-  const [targetLangName, setTargetLangName] = useState('Hindi');
+  const [targetLang,    setTargetLang]    = useState(state.selectedLanguage);
+  const [targetLangName, setTargetLangName] = useState(state.selectedLanguageName);
   const [isTranslating, setIsTranslating] = useState(false);
   const [showAllLangs,  setShowAllLangs]  = useState(false);
   const [copied,        setCopied]        = useState(false);
@@ -54,7 +53,12 @@ export default function EnglishToNativeScreen() {
 
   async function handleCopy() {
     if (!translatedText) return;
-    await Clipboard.setStringAsync(translatedText);
+    try {
+      await Clipboard.setStringAsync(translatedText);
+    } catch {
+      Alert.alert('Copy failed', 'Could not copy to clipboard.');
+      return;
+    }
     setCopied(true);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setTimeout(() => setCopied(false), 2000);

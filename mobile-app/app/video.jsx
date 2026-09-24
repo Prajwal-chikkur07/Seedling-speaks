@@ -10,67 +10,105 @@ import { useApp } from '../src/context/AppContext';
 import api from '../src/services/api';
 
 const LANG_ENTRIES = Object.entries(TARGET_LANGUAGES);
+const POLL_MS = 3000;
+const MAX_POLLS = 200;          // ~10 minutes
+const MAX_POLL_ERRORS = 5;      // consecutive network errors before giving up
 
 export default function VideoScreen() {
   const insets = useSafeAreaInsets();
-  const { addHistory, incrementUsage, showError } = useApp();
+  const { state, addHistory, incrementUsage, showError } = useApp();
 
   const [step, setStep] = useState(0); // 0=upload, 1=configure, 2=processing, 3=results
   const [videoUri, setVideoUri] = useState(null);
   const [videoName, setVideoName] = useState('');
-  const [videoId, setVideoId] = useState(null);
-  const [targetLang, setTargetLang] = useState('hi-IN');
-  const [targetLangName, setTargetLangName] = useState('Hindi');
+  const [targetLang, setTargetLang] = useState(state.selectedLanguage);
+  const [targetLangName, setTargetLangName] = useState(state.selectedLanguageName);
   const [showPicker, setShowPicker] = useState(false);
   const [result, setResult] = useState(null);
   const pollRef = useRef(null);
+  const pollGenRef = useRef(0); // bumped to cancel an in-flight polling loop
 
-  useEffect(() => {
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, []);
+  function stopPolling() {
+    pollGenRef.current += 1;
+    if (pollRef.current) clearTimeout(pollRef.current);
+    pollRef.current = null;
+  }
+
+  useEffect(() => stopPolling, []);
 
   async function pickVideo() {
-    const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['videos'] });
-    if (!res.canceled && res.assets[0]) {
-      setVideoUri(res.assets[0].uri);
-      setVideoName(res.assets[0].fileName || 'video.mp4');
-      setStep(1);
+    try {
+      const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['videos'] });
+      if (!res.canceled && res.assets[0]) {
+        setVideoUri(res.assets[0].uri);
+        setVideoName(res.assets[0].fileName || res.assets[0].uri.split('/').pop() || 'video.mp4');
+        setStep(1);
+      }
+    } catch (e) {
+      showError('Could not open video library: ' + e.message);
     }
+  }
+
+  // Poll with a setTimeout chain so requests never overlap, and give up after
+  // MAX_POLLS attempts or MAX_POLL_ERRORS consecutive failures.
+  function pollStatus(id) {
+    stopPolling();
+    const gen = pollGenRef.current;
+    let attempts = 0;
+    let errors = 0;
+
+    const tick = async () => {
+      attempts += 1;
+      try {
+        const status = await api.getVideoStatus(id);
+        if (gen !== pollGenRef.current) return;
+        errors = 0;
+        if (status.status === 'completed') {
+          setResult(status);
+          setStep(3);
+          addHistory({
+            id: Date.now().toString(),
+            text: status.transcript || '',
+            native: status.translated_text || '',
+            language: targetLangName,
+            type: 'video',
+            timestamp: new Date().toISOString(),
+          });
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          return;
+        }
+        if (status.status === 'error') {
+          showError(status.error || 'Video subtitles failed');
+          setStep(1);
+          return;
+        }
+      } catch (e) {
+        if (gen !== pollGenRef.current) return;
+        errors += 1;
+        if (errors >= MAX_POLL_ERRORS) {
+          showError('Lost connection while checking video status: ' + e.message);
+          setStep(1);
+          return;
+        }
+      }
+      if (attempts >= MAX_POLLS) {
+        showError('Video processing is taking too long. Please try again later.');
+        setStep(1);
+        return;
+      }
+      pollRef.current = setTimeout(tick, POLL_MS);
+    };
+
+    pollRef.current = setTimeout(tick, POLL_MS);
   }
 
   async function handleUploadAndTranslate() {
     setStep(2);
     try {
       const uploadRes = await api.uploadVideo(videoUri, videoName);
-      setVideoId(uploadRes.video_id);
       await api.translateVideo(uploadRes.video_id, targetLang);
       incrementUsage('geminiCalls');
-
-      pollRef.current = setInterval(async () => {
-        try {
-          const status = await api.getVideoStatus(uploadRes.video_id);
-          if (status.status === 'completed') {
-            clearInterval(pollRef.current);
-            setResult(status);
-            setStep(3);
-            
-            addHistory({
-              id: Date.now().toString(),
-              text: status.transcript || '',
-              native: status.translated_text || '',
-              language: targetLangName,
-              type: 'video',
-              timestamp: new Date().toISOString(),
-            });
-
-            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-          } else if (status.status === 'error') {
-            clearInterval(pollRef.current);
-            showError(status.error || 'Video subtitles failed');
-            setStep(1);
-          }
-        } catch { /* continue polling */ }
-      }, 3000);
+      pollStatus(uploadRes.video_id);
     } catch (e) {
       showError('Upload failed: ' + e.message);
       setStep(1);
@@ -78,11 +116,10 @@ export default function VideoScreen() {
   }
 
   function handleReset() {
-    if (pollRef.current) clearInterval(pollRef.current);
+    stopPolling();
     setStep(0);
     setVideoUri(null);
     setVideoName('');
-    setVideoId(null);
     setResult(null);
   }
 

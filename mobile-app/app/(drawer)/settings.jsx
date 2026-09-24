@@ -8,7 +8,6 @@ import {
   StyleSheet,
   Alert,
   TextInput,
-  Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useApp } from '../../src/context/AppContext';
@@ -56,9 +55,10 @@ export default function SettingsScreen() {
   }
 
   function updateIntegration(app, key, value) {
-    const updated = { ...integrationSettings };
-    updated[app][key] = value;
-    setField('integrationSettings', updated);
+    setField('integrationSettings', {
+      ...integrationSettings,
+      [app]: { ...integrationSettings[app], [key]: value },
+    });
   }
 
   return (

@@ -1,132 +1,165 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import { View, Text, TouchableOpacity, ScrollView, StyleSheet, ActivityIndicator } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Audio } from 'expo-av';
+import { useFocusEffect } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import { COLORS } from '../../src/constants/colors';
 import { TARGET_LANGUAGES } from '../../src/constants/languages';
 import { useApp } from '../../src/context/AppContext';
 import api from '../../src/services/api';
-import { useNavigation } from '@react-navigation/native';
+import { ensureMicPermission, startRecordingSession, stopRecordingSafely, resetAudioMode } from '../../src/services/recording';
 import { useDrawer } from '../../src/context/DrawerContext';
 
 const LANG_ENTRIES = Object.entries(TARGET_LANGUAGES);
 const CHUNK_MS = 5000;
 
-const SPEAKER_COLORS = ['#7C3AED', '#0EA5E9', '#10B981', '#F59E0B', '#F43F5E'];
-
 export default function ContinuousScreen() {
   const insets = useSafeAreaInsets();
-  const { state, setField, addHistory, showError, incrementUsage } = useApp();
-  const navigation = useNavigation();
+  const { state, addHistory, showError, incrementUsage } = useApp();
   const { openDrawer } = useDrawer();
 
   const [sessionState, setSessionState] = useState('idle'); // idle | listening | paused | ended
   const [lines, setLines] = useState([]);
-  const [selectedLang, setSelectedLang] = useState('hi-IN');
-  const [selectedLangName, setSelectedLangName] = useState('Hindi');
+  const [selectedLang, setSelectedLang] = useState(state.selectedLanguage);
+  const [selectedLangName, setSelectedLangName] = useState(state.selectedLanguageName);
   const [showLangPicker, setShowLangPicker] = useState(false);
   const [timer, setTimer] = useState(0);
 
   const recordingRef = useRef(null);
   const timerRef = useRef(null);
-  const chunkRef = useRef(null);
+  const chunkRef = useRef(null);        // setTimeout handle for the next chunk
   const scrollRef = useRef(null);
+  const activeRef = useRef(false);      // true while the session should keep recording
+  const cycleRef = useRef(null);        // in-flight recordChunk promise (prevents overlap)
+  const pendingRef = useRef(new Set()); // in-flight processChunk promises
+  const stopRef = useRef(null);         // in-flight stopListening promise
+  const linesRef = useRef([]);
+  const langRef = useRef(selectedLang);
+  langRef.current = selectedLang;
 
-  useEffect(() => {
-    return () => {
-      clearInterval(timerRef.current);
-      clearInterval(chunkRef.current);
-    };
-  }, []);
+  function updateLines(fn) {
+    linesRef.current = fn(linesRef.current);
+    setLines(linesRef.current);
+  }
+
+  // Stop, unload and queue the current recording for transcription.
+  async function flushRecording() {
+    const rec = recordingRef.current;
+    recordingRef.current = null;
+    if (!rec) return;
+    const uri = await stopRecordingSafely(rec);
+    if (uri) {
+      const p = processChunk(uri);
+      pendingRef.current.add(p);
+      p.finally(() => pendingRef.current.delete(p));
+    }
+  }
+
+  // One chunk cycle: flush the previous recording, start the next, then
+  // schedule the following cycle. A setTimeout chain (not setInterval) so
+  // cycles never overlap even when stop/start is slow.
+  function recordChunk() {
+    if (!activeRef.current || cycleRef.current) return cycleRef.current;
+    cycleRef.current = (async () => {
+      try {
+        await flushRecording();
+        if (!activeRef.current) return;
+        recordingRef.current = await startRecordingSession();
+        // Paused/ended while the recorder was starting: stop it right away.
+        if (!activeRef.current) await flushRecording();
+      } catch (e) {
+        if (__DEV__) console.warn('[continuous] chunk error', e?.message || e);
+      } finally {
+        cycleRef.current = null;
+      }
+      if (activeRef.current) chunkRef.current = setTimeout(recordChunk, CHUNK_MS);
+    })();
+    return cycleRef.current;
+  }
+
+  // Stop recording (used by pause, end and when leaving the screen).
+  function stopListening() {
+    activeRef.current = false;
+    clearTimeout(chunkRef.current);
+    clearInterval(timerRef.current);
+    stopRef.current = (async () => {
+      await cycleRef.current;
+      await flushRecording();
+      await resetAudioMode();
+    })();
+    return stopRef.current;
+  }
+
+  // Drawer screens stay mounted, so stop the mic when the screen loses focus
+  // (and on unmount) instead of recording in the background.
+  useFocusEffect(useCallback(() => () => {
+    if (activeRef.current || recordingRef.current) {
+      stopListening();
+      setSessionState((s) => (s === 'listening' ? 'paused' : s));
+    }
+  }, []));
+
+  async function beginListening() {
+    await stopRef.current; // let a pending pause/stop finish first
+    activeRef.current = true;
+    timerRef.current = setInterval(() => setTimer((t) => t + 1), 1000);
+    recordChunk();
+  }
 
   async function startSession() {
     try {
-      const perm = await Audio.requestPermissionsAsync();
-      if (!perm.granted) return;
-      await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
+      if (!(await ensureMicPermission())) return;
       setSessionState('listening');
-      setLines([]);
+      updateLines(() => []);
       setTimer(0);
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-      timerRef.current = setInterval(() => setTimer((t) => t + 1), 1000);
-      recordChunk();
-      chunkRef.current = setInterval(recordChunk, CHUNK_MS);
+      await beginListening();
     } catch (e) {
       showError('Failed to start session: ' + e.message);
     }
   }
 
-  async function recordChunk() {
-    try {
-      if (recordingRef.current) {
-        await recordingRef.current.stopAndUnloadAsync();
-        const uri = recordingRef.current.getURI();
-        recordingRef.current = null;
-        processChunk(uri);
-      }
-      const { recording } = await Audio.Recording.createAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
-      recordingRef.current = recording;
-    } catch (e) {
-      // chunk error - continue
-    }
-  }
-
   async function processChunk(uri) {
-    const lineId = Date.now().toString();
-    setLines((prev) => [...prev, { id: lineId, text: '', processing: true, speaker: Math.ceil(Math.random() * 3) }]);
+    const lineId = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    updateLines((prev) => [...prev, { id: lineId, text: '', processing: true }]);
     try {
-      const result = await api.translateAudioFromBlob({ uri, name: 'chunk.m4a', type: 'audio/m4a' }, selectedLang);
+      const result = await api.translateAudioFromBlob(uri, langRef.current);
       incrementUsage('sarvamCalls');
       if (result.transcript && result.transcript.trim()) {
-        setLines((prev) => prev.map((l) => l.id === lineId ? { ...l, text: result.transcript, native: result.native_transcript, processing: false } : l));
+        updateLines((prev) => prev.map((l) => l.id === lineId ? { ...l, text: result.transcript, native: result.native_transcript, processing: false } : l));
       } else {
-        setLines((prev) => prev.filter((l) => l.id !== lineId));
+        updateLines((prev) => prev.filter((l) => l.id !== lineId));
       }
-    } catch {
-      setLines((prev) => prev.filter((l) => l.id !== lineId));
+    } catch (e) {
+      if (__DEV__) console.warn('[continuous] chunk transcription failed', e?.message || e);
+      updateLines((prev) => prev.filter((l) => l.id !== lineId));
     }
   }
 
   async function pauseSession() {
-    clearInterval(chunkRef.current);
-    if (recordingRef.current) {
-      await recordingRef.current.stopAndUnloadAsync();
-      const uri = recordingRef.current.getURI();
-      recordingRef.current = null;
-      processChunk(uri);
-    }
-    clearInterval(timerRef.current);
     setSessionState('paused');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    await stopListening();
   }
 
   function resumeSession() {
     setSessionState('listening');
-    timerRef.current = setInterval(() => setTimer((t) => t + 1), 1000);
-    recordChunk();
-    chunkRef.current = setInterval(recordChunk, CHUNK_MS);
+    beginListening();
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
   }
 
   async function endSession() {
-    clearInterval(chunkRef.current);
-    clearInterval(timerRef.current);
-    if (recordingRef.current) {
-      await recordingRef.current.stopAndUnloadAsync();
-      const uri = recordingRef.current.getURI();
-      recordingRef.current = null;
-      processChunk(uri);
-    }
     setSessionState('ended');
+    await stopListening();
+    // Wait for the final chunk(s) to come back before saving.
+    await Promise.allSettled([...pendingRef.current]);
 
-    if (lines.length > 0) {
-      const fullTranscript = lines.map(l => `Speaker ${l.speaker}: ${l.text}`).join('\n');
-      const fullNative = lines.map(l => l.native).filter(Boolean).join('\n');
+    const finished = linesRef.current.filter((l) => !l.processing && l.text?.trim());
+    if (finished.length > 0) {
       addHistory({
         id: Date.now().toString(),
-        text: fullTranscript,
-        native: fullNative,
+        text: finished.map((l) => l.text).join('\n'),
+        native: finished.map((l) => l.native).filter(Boolean).join('\n'),
         language: selectedLangName,
         type: 'continuous',
         timestamp: new Date().toISOString(),
@@ -138,7 +171,7 @@ export default function ContinuousScreen() {
 
   function clearSession() {
     setSessionState('idle');
-    setLines([]);
+    updateLines(() => []);
     setTimer(0);
   }
 
@@ -192,14 +225,10 @@ export default function ContinuousScreen() {
             <Text style={st.emptySubtext}>Listening for speech...</Text>
           </View>
         ) : (
-          lines.map((line, i) => {
-            const isRight = line.speaker % 2 === 0;
-            const color = SPEAKER_COLORS[(line.speaker - 1) % SPEAKER_COLORS.length];
+          lines.map((line) => {
+            // No speaker diarization yet, so lines aren't attributed to speakers.
             return (
-              <View key={line.id} style={[st.bubble, isRight ? st.bubbleRight : st.bubbleLeft]}>
-                <View style={[st.speakerBadge, { backgroundColor: color + '20' }]}>
-                  <Text style={[st.speakerText, { color }]}>Speaker {line.speaker}</Text>
-                </View>
+              <View key={line.id} style={[st.bubble, st.bubbleLeft]}>
                 {line.processing ? (
                   <ActivityIndicator size="small" color={COLORS.saffron} style={{ marginTop: 8 }} />
                 ) : (
@@ -273,9 +302,6 @@ const st = StyleSheet.create({
   emptySubtext: { fontSize: 14, color: COLORS.muted, textAlign: 'center', lineHeight: 20, paddingHorizontal: 20 },
   bubble: { maxWidth: '80%', borderRadius: 16, padding: 12, marginBottom: 12 },
   bubbleLeft: { alignSelf: 'flex-start', backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.border },
-  bubbleRight: { alignSelf: 'flex-end', backgroundColor: COLORS.ink },
-  speakerBadge: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, alignSelf: 'flex-start', marginBottom: 6 },
-  speakerText: { fontSize: 11, fontWeight: '700' },
   bubbleText: { fontSize: 14, color: COLORS.ink, lineHeight: 20 },
   bubbleNative: { fontSize: 12, color: COLORS.muted, marginTop: 4, fontStyle: 'italic' },
   controlBar: { position: 'absolute', bottom: 0, left: 0, right: 0, paddingHorizontal: 20, paddingTop: 12, backgroundColor: COLORS.bg, borderTopWidth: 1, borderTopColor: COLORS.border },

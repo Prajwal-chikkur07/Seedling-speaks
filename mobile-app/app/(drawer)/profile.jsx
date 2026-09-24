@@ -7,6 +7,8 @@ import { COLORS } from '../../src/constants/colors';
 import { TARGET_LANGUAGES } from '../../src/constants/languages';
 import { useApp } from '../../src/context/AppContext';
 import { useDrawer } from '../../src/context/DrawerContext';
+import { setAuthTokenGetter } from '../../src/services/api';
+import { APP_VERSION } from '../../src/constants/app';
 
 const LANG_ENTRIES = Object.entries(TARGET_LANGUAGES);
 
@@ -27,7 +29,7 @@ export default function ProfileScreen() {
   function handleSignOut() {
     Alert.alert('Sign Out', 'Are you sure you want to sign out?', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Sign Out', style: 'destructive', onPress: () => signOut() },
+      { text: 'Sign Out', style: 'destructive', onPress: () => { setAuthTokenGetter(null); signOut(); } },
     ]);
   }
 
@@ -70,11 +72,11 @@ export default function ProfileScreen() {
             <Text style={s.statLabel}>Transcripts</Text>
           </View>
           <View style={[s.statCard, { borderRightWidth: 1, borderRightColor: COLORS.border }]}>
-            <Text style={s.statVal}>10+</Text>
+            <Text style={s.statVal}>{LANG_ENTRIES.length}</Text>
             <Text style={s.statLabel}>Languages</Text>
           </View>
           <View style={s.statCard}>
-            <Text style={s.statVal}>v2.5</Text>
+            <Text style={s.statVal}>v{APP_VERSION}</Text>
             <Text style={s.statLabel}>Version</Text>
           </View>
         </View>

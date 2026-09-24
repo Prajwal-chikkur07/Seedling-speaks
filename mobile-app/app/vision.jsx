@@ -14,34 +14,38 @@ const LANG_ENTRIES = Object.entries(TARGET_LANGUAGES);
 
 export default function VisionScreen() {
   const insets = useSafeAreaInsets();
-  const { addHistory, incrementUsage, showError } = useApp();
+  const { state, addHistory, incrementUsage, showError } = useApp();
 
   const [imageUri, setImageUri] = useState(null);
   const [regions, setRegions] = useState([]);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [targetLang, setTargetLang] = useState('en-IN');
-  const [targetLangName, setTargetLangName] = useState('Hindi');
+  const [targetLang, setTargetLang] = useState(state.selectedLanguage);
+  const [targetLangName, setTargetLangName] = useState(state.selectedLanguageName);
   const [showPicker, setShowPicker] = useState(false);
 
   async function pickImage(useCamera) {
-    if (useCamera) {
-      const { status } = await ImagePicker.requestCameraPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Permission needed', 'Camera access is required to take photos.');
-        return;
+    try {
+      if (useCamera) {
+        const { status } = await ImagePicker.requestCameraPermissionsAsync();
+        if (status !== 'granted') {
+          Alert.alert('Permission needed', 'Camera access is required to take photos.');
+          return;
+        }
+      } else {
+        const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (status !== 'granted') {
+          Alert.alert('Permission needed', 'Photo library access is required.');
+          return;
+        }
       }
-    } else {
-      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Permission needed', 'Photo library access is required.');
-        return;
+      const method = useCamera ? ImagePicker.launchCameraAsync : ImagePicker.launchImageLibraryAsync;
+      const result = await method({ mediaTypes: ['images'], quality: 0.8 });
+      if (!result.canceled && result.assets[0]) {
+        setImageUri(result.assets[0].uri);
+        setRegions([]);
       }
-    }
-    const method = useCamera ? ImagePicker.launchCameraAsync : ImagePicker.launchImageLibraryAsync;
-    const result = await method({ mediaTypes: ['images'], quality: 0.8 });
-    if (!result.canceled && result.assets[0]) {
-      setImageUri(result.assets[0].uri);
-      setRegions([]);
+    } catch (e) {
+      showError('Could not open ' + (useCamera ? 'camera' : 'photo library') + ': ' + e.message);
     }
   }
 
@@ -147,7 +151,7 @@ export default function VisionScreen() {
                       <View style={st.regionBadge}>
                         <Text style={st.regionBadgeText}>{i + 1}</Text>
                       </View>
-                      <TouchableOpacity onPress={() => Clipboard.setStringAsync(r.translation || r.text)}>
+                      <TouchableOpacity onPress={() => Clipboard.setStringAsync(r.translation || r.text || '').catch(() => Alert.alert('Copy failed', 'Could not copy to clipboard.'))}>
                         <Text style={st.copyBtn}>📋</Text>
                       </TouchableOpacity>
                     </View>
