@@ -10,6 +10,7 @@ import * as Linking from 'expo-linking';
 import { router } from 'expo-router';
 import { COLORS } from '../src/constants/colors';
 import api from '../src/services/api';
+import { APP_VERSION } from '../src/constants/app';
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -27,7 +28,7 @@ export default function SignInScreen() {
   const { startOAuthFlow: startGoogleOAuth } = useOAuth({ strategy: 'oauth_google' });
   const { signIn, setActive: setSignInActive, isLoaded: signInLoaded } = useSignIn();
   const { signUp, setActive: setSignUpActive, isLoaded: signUpLoaded } = useSignUp();
-  const { isSignedIn, getToken } = useAuth();
+  const { isSignedIn } = useAuth();
   const { user: clerkUser } = useUser();
 
   const [showEmailForm, setShowEmailForm] = useState(false);
@@ -50,17 +51,20 @@ export default function SignInScreen() {
 
   async function syncUserToBackend() {
     try {
-      const token = await getToken();
-      if (token) api.setAuthToken?.(token);
+      // Auth header is attached by the api client's request interceptor.
       await api.syncUser({
         id: clerkUser.id,
         email: clerkUser.primaryEmailAddress?.emailAddress || clerkUser.emailAddresses?.[0]?.emailAddress,
         first_name: clerkUser.firstName,
         last_name: clerkUser.lastName,
         avatar_url: clerkUser.imageUrl,
-        consent_given: true,
+        // NOTE: there is no consent UI in the app yet, so we don't claim consent.
+        // Wire this to a real opt-in before relying on consent_given server-side.
+        consent_given: false,
       });
-    } catch {}
+    } catch (e) {
+      console.warn('[sign-in] syncUser failed:', e?.message || e);
+    }
     router.replace('/(drawer)');
   }
 
@@ -262,7 +266,7 @@ export default function SignInScreen() {
             </TouchableOpacity>
           </View>
 
-          <Text style={st.footer}>Powered by Seedlinglabs · v2.5</Text>
+          <Text style={st.footer}>Powered by Seedlinglabs · v{APP_VERSION}</Text>
         </ScrollView>
       </View>
     </KeyboardAvoidingView>

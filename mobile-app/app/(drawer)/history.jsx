@@ -26,7 +26,12 @@ export default function HistoryScreen() {
   });
 
   async function handleCopy(entry) {
-    await Clipboard.setStringAsync(entry.text || '');
+    try {
+      await Clipboard.setStringAsync(entry.text || '');
+    } catch {
+      Alert.alert('Copy failed', 'Could not copy to clipboard.');
+      return;
+    }
     setCopiedId(entry.id);
     setTimeout(() => setCopiedId(null), 2000);
   }

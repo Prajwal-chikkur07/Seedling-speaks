@@ -69,7 +69,6 @@ export default function AuthPage() {
     try {
       const token = await getToken();
       if (!token) throw new Error('Failed to get Clerk authentication token');
-      api.setAuthToken(token);
       const response = await api.syncUser({
         id: clerkUser.id,
         email: clerkUser.primaryEmailAddress?.emailAddress || clerkUser.emailAddresses[0]?.emailAddress,

@@ -1,34 +1,14 @@
-/* eslint-disable no-unused-vars */
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { useUser } from '@clerk/clerk-react';
 import RecordingControls from '../components/RecordingControls';
-import PushToTalkRecorder from '../components/PushToTalkRecorder';
 import { useApp } from '../context/AppContext';
 import {
-  Mic, Ear, Copy, Check, Download, Sparkles, Volume2, Square,
-  Languages, Loader2, ChevronDown, Mail, Slack, Linkedin,
-  MessageSquare, X, Send, ExternalLink, BookmarkPlus, Hash,
-  Upload, Smile, Frown, Minus, Wand2, FileAudio, Trash2,
-  AlignLeft, ClipboardList, HelpCircle, Link, ChevronUp, ChevronDown as ChevronDownIcon,
-  ArrowLeftRight, BookOpen, BarChart2, Globe2, Tag, Keyboard, Pin, RotateCcw
+  Mic, Copy, Check, Download, Volume2, Square, Loader2, ChevronDown, ChevronUp,
+  Hash, Smile, Frown, Minus, Trash2, ArrowLeftRight,
 } from 'lucide-react';
 import { useSpeech } from '../hooks/useSpeech';
 import * as api from '../services/api';
 import { getLabels } from '../services/uiLabels';
-
-const MODES = (RM) => [
-  { id: RM.PUSH_TO_TALK, icon: Mic,       title: 'Start Speaking',       desc: 'Record live with push-to-talk',      color: 'from-gray-900 to-gray-700' },
-  { id: RM.CONTINUOUS,   icon: Ear,       title: 'Continuous Listening', desc: 'Hands-free with silence detection',  color: 'from-gray-700 to-gray-500' },
-  { id: RM.FILE_UPLOAD,  icon: FileAudio, title: 'Upload Audio File',    desc: 'Transcribe .mp3, .wav, .m4a, .ogg', color: 'from-gray-600 to-gray-400' },
-];
-
-const CHANNELS = [
-  { id: 'email',    label: 'Email',     icon: Mail,          color: 'text-blue-500',   bg: 'bg-blue-50',   border: 'border-blue-100'   },
-  { id: 'slack',    label: 'Slack',     icon: Slack,         color: 'text-purple-500', bg: 'bg-purple-50', border: 'border-purple-100' },
-  { id: 'linkedin', label: 'LinkedIn',  icon: Linkedin,      color: 'text-sky-600',    bg: 'bg-sky-50',    border: 'border-sky-100'    },
-  { id: 'whatsapp', label: 'WhatsApp',  icon: MessageSquare, color: 'text-green-500',  bg: 'bg-green-50',  border: 'border-green-100'  },
-];
 
 const TONE_OPTIONS = ['Email Formal', 'Email Casual', 'Slack', 'LinkedIn', 'WhatsApp Business', 'Custom'];
 
@@ -77,218 +57,21 @@ function SentimentBadge({ sentiment, score, summary }) {
   );
 }
 
-function FileUploadZone({ onTranscribed }) {
-  const [dragging, setDragging] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [fileName, setFileName] = useState('');
-  const inputRef = useRef(null);
-
-  const processFile = async (file) => {
-    if (!file) return;
-    setFileName(file.name);
-    setUploading(true);
-    try {
-      const result = await api.translateAudioFromBlob(file, file.name);
-      onTranscribed(result);
-    } catch (e) {
-      onTranscribed({ error: e.response?.data?.detail || 'Upload failed' });
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  return (
-    <div
-      onDragOver={e => { e.preventDefault(); setDragging(true); }}
-      onDragLeave={() => setDragging(false)}
-      onDrop={e => { e.preventDefault(); setDragging(false); processFile(e.dataTransfer.files[0]); }}
-      onClick={() => inputRef.current?.click()}
-      className={`relative flex flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed cursor-pointer transition-all py-14 ${
-        dragging ? 'border-gray-400 bg-gray-100' : 'border-gray-200 bg-white hover:border-gray-300 hover:bg-gray-50'
-      }`}
-    >
-      <input ref={inputRef} type="file" accept="audio/*,.mp3,.wav,.m4a,.ogg,.flac,.webm" className="hidden"
-        onChange={e => processFile(e.target.files[0])} />
-      {uploading ? (
-        <>
-          <Loader2 className="w-8 h-8 text-gray-400 animate-spin" />
-          <p className="text-[14px] text-gray-500 font-medium">Transcribing {fileName}…</p>
-        </>
-      ) : (
-        <>
-          <div className="w-12 h-12 rounded-2xl bg-gray-100 flex items-center justify-center">
-            <Upload className="w-5 h-5 text-gray-400" />
-          </div>
-          <div className="text-center">
-            <p className="text-[14px] font-semibold text-gray-700">Drop audio file here</p>
-            <p className="text-[12px] text-gray-400 mt-1">MP3, WAV, M4A, OGG, FLAC · up to 100MB</p>
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-function ChannelModal({ channel, text, onClose }) {
-  const { state, setField } = useApp();
-  const navigate = useNavigate();
-  const creds = state.channelCredentials || {};
-  const [toEmail, setToEmail] = useState('');
-  const [status, setStatus] = useState(null);
-  const [errMsg, setErrMsg] = useState('');
-
-  const hasCredentials = {
-    email: true, slack: !!creds.slackWebhook?.trim(),
-    linkedin: true, whatsapp: !!creds.whatsappPhone?.trim(),
-  }[channel.id];
-
-  const goToProfile = () => { onClose(); navigate('/app/profile'); };
-  const canSend = channel.id === 'email' ? !!toEmail.trim() : true;
-
-  const handleSend = async () => {
-    setStatus('sending');
-    try {
-      if (channel.id === 'email') {
-        let subject = creds.emailSubject || 'Message from SeedlingSpeaks';
-        let body = text;
-        const subjectMatch = text.match(/^Subject:\s*(.+?)[\r\n]/i);
-        if (subjectMatch) {
-          subject = subjectMatch[1].trim();
-          body = text.replace(/^Subject:\s*.+?[\r\n]+/i, '').trim();
-        }
-        window.open(`mailto:${toEmail.trim()}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`, '_blank');
-        setStatus('ok'); return;
-      } else if (channel.id === 'slack') {
-        await api.sendToSlack({ text, webhookUrl: creds.slackWebhook });
-      } else if (channel.id === 'linkedin') {
-        await api.shareToLinkedIn({ text, addHashtags: true });
-      } else if (channel.id === 'whatsapp') {
-        const num = creds.whatsappPhone.replace(/\D/g, '');
-        window.open(`https://wa.me/${num}?text=${encodeURIComponent(text)}`, '_blank');
-        setStatus('ok'); return;
-      }
-      setStatus('ok');
-    } catch (e) {
-      setErrMsg(e.response?.data?.detail || e.message || 'Something went wrong');
-      setStatus('err');
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 backdrop-blur-sm" onClick={onClose}>
-      <div className="bg-white rounded-2xl shadow-2xl border border-gray-100 w-full max-w-lg mx-4 p-6" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between mb-5">
-          <div className="flex items-center gap-3">
-            <div className={`w-9 h-9 rounded-xl ${channel.bg} ${channel.border} border flex items-center justify-center`}>
-              <channel.icon className={`w-4 h-4 ${channel.color}`} />
-            </div>
-            <p className="text-[15px] font-bold text-gray-900">Send via {channel.label}</p>
-          </div>
-          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 transition-all">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-        {!hasCredentials ? (
-          <div className="text-center py-4">
-            <p className="text-[14px] text-gray-500 mb-4">No {channel.label} credentials saved yet.</p>
-            <button onClick={goToProfile} className="flex items-center gap-2 mx-auto bg-gray-900 text-white rounded-xl px-5 py-2.5 text-[13px] font-semibold hover:bg-gray-700 transition-all">
-              <ExternalLink className="w-3.5 h-3.5" /> Go to Profile
-            </button>
-          </div>
-        ) : (
-          <>
-            <div className="mb-4">
-              <label className="block text-[12px] font-semibold text-gray-500 mb-1.5">Message preview</label>
-              <div className="px-4 py-3 rounded-xl border border-amber-100 bg-amber-50 text-[13px] text-gray-700 leading-relaxed max-h-40 overflow-y-auto whitespace-pre-wrap">
-                {text.slice(0, 400)}{text.length > 400 ? '…' : ''}
-              </div>
-            </div>
-            {channel.id === 'email' && (
-              <div className="mb-4">
-                <label className="block text-[12px] font-semibold text-gray-500 mb-1.5">To email</label>
-                <input type="email" value={toEmail} onChange={e => setToEmail(e.target.value)}
-                  placeholder="recipient@example.com" autoFocus
-                  className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-[14px] focus:outline-none focus:border-gray-400 transition-all" />
-              </div>
-            )}
-            {(channel.id === 'slack' || channel.id === 'whatsapp') && (
-              <div className="mb-4 px-3 py-2 bg-gray-50 rounded-xl border border-gray-100 text-[12px] text-gray-400">
-                {channel.id === 'slack' && <>Webhook: <span className="font-semibold text-gray-700">{creds.slackWebhook?.slice(0, 35)}…</span></>}
-                {channel.id === 'whatsapp' && <>To: <span className="font-semibold text-gray-700">+{creds.whatsappPhone}</span></>}
-                <button onClick={goToProfile} className="ml-2 underline underline-offset-2 hover:text-gray-700 transition-colors">Change →</button>
-              </div>
-            )}
-            {status === 'ok' && (
-              <div className="mb-4 px-4 py-2.5 bg-green-50 border border-green-100 rounded-xl text-[13px] text-green-700 flex items-center gap-2">
-                <Check className="w-4 h-4" /> Sent successfully
-              </div>
-            )}
-            {status === 'err' && (
-              <div className="mb-4 px-4 py-2.5 bg-red-50 border border-red-100 rounded-xl text-[13px] text-red-600">{errMsg}</div>
-            )}
-            <div className="flex items-center justify-end gap-2">
-              <button onClick={onClose} className="px-4 py-2 rounded-xl text-[13px] font-medium text-gray-500 hover:bg-gray-100 transition-all">Cancel</button>
-              {status !== 'ok' && (
-                <button onClick={handleSend} disabled={status === 'sending' || !canSend}
-                  className={`flex items-center gap-2 px-4 py-2 rounded-xl text-[13px] font-semibold text-white transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
-                    channel.id === 'whatsapp' ? 'bg-green-500 hover:bg-green-600' :
-                    channel.id === 'linkedin' ? 'bg-sky-600 hover:bg-sky-700' :
-                    channel.id === 'slack'    ? 'bg-purple-600 hover:bg-purple-700' :
-                    'bg-blue-600 hover:bg-blue-700'}`}>
-                  {status === 'sending'
-                    ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Sending...</>
-                    : (channel.id === 'whatsapp' || channel.id === 'email')
-                      ? <><ExternalLink className="w-3.5 h-3.5" />Open {channel.id === 'email' ? 'Email App' : 'WhatsApp'}</>
-                      : <><Send className="w-3.5 h-3.5" />Send</>}
-                </button>
-              )}
-            </div>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
 export default function Home() {
   const { user } = useUser();
-  const { state, setField, setFields, RECORDING_MODES, TARGET_LANGUAGES, showError, showSuccess, addHistory, saveTemplates, incrementUsage, addNotificationLog } = useApp();
+  const { state, setField, setFields, TARGET_LANGUAGES, showError, showSuccess, addHistory, incrementUsage } = useApp();
   const L = getLabels(state.uiLanguage);
   const { isPlaying, speak } = useSpeech();
   const [isTranslating, setIsTranslating] = useState(false);
-  const [activeChannel, setActiveChannel] = useState(null);
   const [selectedTone, setSelectedTone] = useState(null);
   const [rewrittenText, setRewrittenText] = useState('');
   const [customToneInput, setCustomToneInput] = useState('');
   const [isRewriting, setIsRewriting] = useState(false);
   const [editableTranscript, setEditableTranscript] = useState('');
   const [sentiment, setSentiment] = useState(null);
-  const [isSuggestingTone, setIsSuggestingTone] = useState(false);
-  const [summary, setSummary] = useState('');
-  const [isSummarizing, setIsSummarizing] = useState(false);
-  const [meetingNotes, setMeetingNotes] = useState(null);
-  const [isMeetingNotes, setIsMeetingNotes] = useState(false);
-  const [qaQuestion, setQaQuestion] = useState('');
-  const [qaAnswer, setQaAnswer] = useState('');
-  const [isAsking, setIsAsking] = useState(false);
-  const [showAIPanel, setShowAIPanel] = useState(false);
-  const [shareLink, setShareLink] = useState('');
-  const [isSharing, setIsSharing] = useState(false);
-  // New features
-  const [backTranslation, setBackTranslation] = useState(null);
-  const [isBackTranslating, setIsBackTranslating] = useState(false);
-  const [readability, setReadability] = useState(null);
-  const [toneConfidence, setToneConfidence] = useState(null);
-  const [isToneConfidence, setIsToneConfidence] = useState(false);
-  const [multiLangs, setMultiLangs] = useState([]);
-  const [multiResults, setMultiResults] = useState({});
-  const [isMultiTranslating, setIsMultiTranslating] = useState(false);
-  const [showMultiLang, setShowMultiLang] = useState(false);
-  const [showShortcuts, setShowShortcuts] = useState(false);
   // New UI changes - for comprehensive output box redesign
   const [showOriginalTranscript, setShowOriginalTranscript] = useState(true);
   const [showRetoneDropdown, setShowRetoneDropdown] = useState(false);
-  const [selectedRetoneForDropdown, setSelectedRetoneForDropdown] = useState(null);
   const [translatedOriginal, setTranslatedOriginal] = useState('');
   const [translatedRetone, setTranslatedRetone] = useState('');
   const [showTranslation, setShowTranslation] = useState(false);
@@ -337,20 +120,6 @@ export default function Home() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.englishText, state.nativeTranscript, user?.id, state.selectedLanguage]);
 
-  // Keyboard shortcuts: Cmd/Ctrl+Enter = translate, Cmd/Ctrl+R = rewrite
-  useEffect(() => {
-    const handler = (e) => {
-      const mod = e.metaKey || e.ctrlKey;
-      if (!mod) return;
-      if (e.key === 'Enter') { e.preventDefault(); handleTranslate(); }
-      if (e.key === 'r') { e.preventDefault(); if (selectedTone && selectedTone !== 'Custom') handleRewrite(selectedTone); }
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedTone, editableTranscript]);
-
-  const handleSpeakEnglish = useCallback(() => speak(rewrittenText || editableTranscript, 'en-IN'), [speak, rewrittenText, editableTranscript]);
   const handleSpeakNative  = useCallback(() => speak(state.nativeTranslation, state.selectedLanguage), [speak, state.nativeTranslation, state.selectedLanguage]);
 
   const handleRewrite = useCallback(async (tone) => {
@@ -374,7 +143,6 @@ export default function Home() {
       }
       setRewrittenText(result);
       incrementUsage('geminiCalls');
-      api.getReadability(result).then(setReadability).catch(() => {});
 
       // Add to Native to English DB seamlessly in background
         if (state.n2eSessionId) {
@@ -388,21 +156,13 @@ export default function Home() {
           }).catch(console.error); // Fire and forget
         }
 
-    } catch (err) {
-      const msg = err.response?.data?.detail || err.message || 'Rewrite failed';
-      showError(msg);
+    } catch {
+      // error toast is shown by the API client
       setShowOriginalTranscript(true);
     } finally {
       setIsRewriting(false);
     }
   }, [editableTranscript, state.englishText, state.customDictionary, customToneInput, showError, incrementUsage, state.n2eSessionId, state.confidenceScore]);
-
-  const handleRetoneDropdownApply = useCallback(async () => {
-    if (!selectedRetoneForDropdown) return;
-    setShowRetoneDropdown(false);
-    setSelectedTone(selectedRetoneForDropdown);
-    await handleRewrite(selectedRetoneForDropdown);
-  }, [selectedRetoneForDropdown, handleRewrite]);
 
   const handleTranslate = useCallback(async () => {
     // Translate the currently displayed version (Original or Retoned)
@@ -420,12 +180,28 @@ export default function Home() {
       }
       setShowTranslation(true);
       incrementUsage('sarvamCalls');
-    } catch (err) {
-      showError(err.response?.data?.detail || 'Translation error');
+    } catch {
+      // error toast is shown by the API client
     } finally {
       setIsTranslating(false);
     }
-  }, [editableTranscript, rewrittenText, showOriginalTranscript, state.selectedLanguage, showError, incrementUsage]);
+  }, [editableTranscript, rewrittenText, showOriginalTranscript, state.selectedLanguage, incrementUsage]);
+
+  // Keyboard shortcut: Cmd/Ctrl+Enter = translate. The ref keeps the listener
+  // calling the latest handleTranslate without re-subscribing on every change.
+  const handleTranslateRef = useRef(handleTranslate);
+  useEffect(() => { handleTranslateRef.current = handleTranslate; }, [handleTranslate]);
+  useEffect(() => {
+    const handler = (e) => {
+      if (!(e.metaKey || e.ctrlKey) || e.key !== 'Enter') return;
+      const t = e.target;
+      if (t instanceof HTMLElement && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName))) return;
+      e.preventDefault();
+      handleTranslateRef.current();
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
 
   const handleLangChange = useCallback((lang) => {
     setFields({ selectedLanguage: lang });
@@ -435,22 +211,6 @@ export default function Home() {
     setShowTranslation(false);
   }, [setFields]);
 
-  const handleDownload = () => {
-    const text = rewrittenText || state.nativeTranslation || editableTranscript;
-    if (!text) return;
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
-    a.download = 'transcript.txt';
-    a.click();
-  };
-
-  const handleSaveTemplate = () => {
-    if (!rewrittenText?.trim()) return;
-    const templates = state.savedTemplates || [];
-    saveTemplates([{ id: Date.now(), tone: selectedTone, text: rewrittenText, createdAt: new Date().toISOString() }, ...templates].slice(0, 20));
-    showSuccess('Template saved');
-  };
-
   const handleClear = () => {
     setField('englishText', '');
     setField('nativeTranscript', '');
@@ -459,133 +219,10 @@ export default function Home() {
     setRewrittenText('');
     setSelectedTone(null);
     setSentiment(null);
-    setSummary('');
-    setMeetingNotes(null);
-    setQaAnswer('');
-    setShareLink('');
-    setBackTranslation(null);
-    setReadability(null);
-    setToneConfidence(null);
-    setMultiResults({});
     setField('nativeTranslation', '');
     setTranslatedOriginal('');
     setTranslatedRetone('');
     setShowTranslation(false);
-  };
-
-  const handleSummarize = async () => {
-    const text = editableTranscript || state.englishText;
-    if (!text?.trim()) return;
-    setIsSummarizing(true); setSummary('');
-    try { setSummary(await api.summarizeTranscript(text)); addNotificationLog('Transcript summarized', 'success'); }
-    catch { showError('Summarize failed'); }
-    finally { setIsSummarizing(false); }
-  };
-
-  const handleMeetingNotes = async () => {
-    const text = editableTranscript || state.englishText;
-    if (!text?.trim()) return;
-    setIsMeetingNotes(true); setMeetingNotes(null);
-    try { setMeetingNotes(await api.getMeetingNotes(text)); }
-    catch { showError('Meeting notes failed'); }
-    finally { setIsMeetingNotes(false); }
-  };
-
-  const handleAskQuestion = async () => {
-    const text = editableTranscript || state.englishText;
-    if (!text?.trim() || !qaQuestion.trim()) return;
-    setIsAsking(true); setQaAnswer('');
-    try { setQaAnswer(await api.askQuestion(text, qaQuestion)); }
-    catch { showError('Q&A failed'); }
-    finally { setIsAsking(false); }
-  };
-
-  const handleShareLink = async () => {
-    const text = editableTranscript || state.englishText;
-    if (!text?.trim()) return;
-    setIsSharing(true);
-    try {
-      const { link_id } = await api.createShareLink(text, 'Shared transcript');
-      setShareLink(link_id);
-      navigator.clipboard.writeText(link_id);
-      showSuccess(`Link ID copied: ${link_id}`);
-      addNotificationLog(`Share link created: ${link_id}`, 'success');
-    } catch { showError('Share failed'); }
-    finally { setIsSharing(false); }
-  };
-
-  const handleSmartTone = async () => {
-    const text = editableTranscript || state.englishText;
-    if (!text?.trim()) return;
-    setIsSuggestingTone(true);
-    try {
-      const tone = await api.suggestTone(text);
-      setSelectedTone(tone);
-      handleRewrite(tone);
-    } catch {
-      showError('Tone suggestion failed');
-    } finally {
-      setIsSuggestingTone(false);
-    }
-  };
-
-  const handleBackTranslate = async () => {
-    if (!state.nativeTranslation?.trim()) return;
-    setIsBackTranslating(true); setBackTranslation(null);
-    try { setBackTranslation(await api.backTranslate(state.nativeTranslation, state.selectedLanguage)); }
-    catch { showError('Back-translation failed'); }
-    finally { setIsBackTranslating(false); }
-  };
-
-  const handleReadability = async () => {
-    const text = rewrittenText || editableTranscript;
-    if (!text?.trim()) return;
-    try { setReadability(await api.getReadability(text)); }
-    catch { /* silent */ }
-  };
-
-  const handleToneConfidence = async () => {
-    if (!rewrittenText?.trim() || !selectedTone) return;
-    setIsToneConfidence(true); setToneConfidence(null);
-    try { setToneConfidence(await api.getToneConfidence(rewrittenText, selectedTone)); }
-    catch { showError('Tone confidence check failed'); }
-    finally { setIsToneConfidence(false); }
-  };
-
-  const handleMultiTranslate = async () => {
-    const text = editableTranscript || state.englishText;
-    if (!text?.trim() || multiLangs.length === 0) return;
-    setIsMultiTranslating(true); setMultiResults({});
-    try { setMultiResults(await api.multiTranslate(text, multiLangs)); }
-    catch { showError('Multi-translate failed'); }
-    finally { setIsMultiTranslating(false); }
-  };
-
-  const handleFileTranscribed = ({ transcript, native_transcript, confidence, error }) => {    if (error) { showError(error); return; }
-    setFields({ englishText: transcript, confidenceScore: confidence ?? null });
-    incrementUsage('sarvamCalls');
-    showSuccess('File transcribed successfully');
-
-// Save the session ID
-      if (user?.id) {
-        api.saveNativeToEnglishSession({
-          userId: user.id,
-          originalLanguage: state.sourceLanguage || 'hi-IN',
-          originalText: native_transcript || transcript || '',
-          translatedText: transcript || ''
-        }).then(data => {
-          if (data?.session_id) {
-            setField('n2eSessionId', data.session_id);
-            api.saveNativeToEnglishTranscription({
-              sessionId: data.session_id,
-              originalTranscript: transcript || '',
-              toneApplied: null,
-              rewrittenText: null,
-              confidenceScore: confidence || null
-            }).catch(console.error);
-          }
-      }).catch(console.error);
-    }
   };
 
   const shareText = rewrittenText || state.nativeTranslation || editableTranscript;
@@ -633,35 +270,9 @@ export default function Home() {
     }
   }, [shareText, selectedTone, showSuccess]);
 
-  // ── File upload mode ──
-  if (state.recordingMode === RECORDING_MODES.FILE_UPLOAD && !editableTranscript) {
-  return (
-    <div style={{ minHeight: '100vh', background: 'var(--bg)' }}>
-      {/* Header */}
-      <div style={{ background: 'var(--surface)', borderBottom: '1px solid rgba(0,0,0,0.06)', padding: '12px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
-          <button onClick={() => setField('recordingMode', null)} style={{ color: 'var(--text-faded)', fontWeight: 500, background: 'none', border: 'none', cursor: 'pointer' }}>Home</button>
-          <span style={{ color: 'var(--text-faded)' }}>/</span>
-          <span style={{ color: 'var(--text-ink)', fontWeight: 600 }}>{L.uploadAudio || "Upload Audio"}</span>
-        </div>
-      </div>
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px 24px', maxWidth: 600, margin: '0 auto' }}>
-        <FileUploadZone onTranscribed={handleFileTranscribed} />
-      </div>
-    </div>
-  );
-  }
-
   // ── Confidence badge values ──
   const confPct = state.confidenceScore != null ? Math.round(state.confidenceScore * 100) : null;
   const confColor = confPct == null ? '' : confPct >= 85 ? 'bg-green-50 text-green-600 border-green-100' : confPct >= 60 ? 'bg-amber-50 text-amber-600 border-amber-100' : 'bg-red-50 text-red-500 border-red-100';
-  const confLabel = confPct == null ? '' : confPct >= 85 ? 'High confidence' : confPct >= 60 ? 'Medium confidence' : 'Low confidence — review';
-
-  // ── Word / char counts ──
-  const wc  = editableTranscript?.trim() ? editableTranscript.trim().split(/\s+/).length : 0;
-  const cc  = editableTranscript?.length || 0;
-  const rwc = rewrittenText?.trim() ? rewrittenText.trim().split(/\s+/).length : 0;
-  const rcc = rewrittenText?.length || 0;
 
   // Unified mode state
   const activeMode = showTranslation ? 'translation' : (rewrittenText && !showOriginalTranscript) ? 'retoned' : 'transcript';
@@ -716,7 +327,7 @@ export default function Home() {
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <span style={{ fontSize: 11, color: 'var(--text-faded)', display: 'none' }}>⌘↵ translate · ⌘R rewrite</span>
+          <span style={{ fontSize: 11, color: 'var(--text-faded)', display: 'none' }}>⌘↵ translate</span>
           <span style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'var(--saffron-light)', color: 'var(--saffron)', borderRadius: 'var(--r-pill)', padding: '4px 12px', fontSize: 11, fontWeight: 700 }}>
             SeedlingSpeaks v2.5
           </span>
@@ -978,35 +589,6 @@ export default function Home() {
         )}
       </div>
 
-      {/* Channel modal */}
-      {activeChannel && (
-        <ChannelModal channel={activeChannel} text={shareText} onClose={() => setActiveChannel(null)} />
-      )}
-
-      {/* Keyboard shortcuts cheatsheet */}
-      {showShortcuts && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 backdrop-blur-sm" onClick={() => setShowShortcuts(false)}>
-          <div className="bg-white rounded-2xl shadow-2xl border border-gray-100 w-full max-w-sm mx-4 p-6" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between mb-4">
-              <p className="text-[15px] font-bold text-gray-900 flex items-center gap-2"><Keyboard className="w-4 h-4" />Keyboard shortcuts</p>
-              <button onClick={() => setShowShortcuts(false)} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 transition-all"><X className="w-4 h-4" /></button>
-            </div>
-            <div className="space-y-2">
-              {[
-                { keys: '⌘ + Enter', action: 'Translate transcript' },
-                { keys: '⌘ + R',     action: 'Rewrite with active tone' },
-                { keys: 'Space',     action: 'Push-to-talk (hold)' },
-                { keys: 'Esc',       action: 'Close modals / panels' },
-              ].map(({ keys, action }) => (
-                <div key={keys} className="flex items-center justify-between py-2 border-b border-gray-50 last:border-0">
-                  <span className="text-[13px] text-gray-600">{action}</span>
-                  <kbd className="px-2 py-1 rounded-lg bg-gray-100 text-gray-700 text-[12px] font-mono font-semibold">{keys}</kbd>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

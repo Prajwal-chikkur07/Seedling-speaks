@@ -1,7 +1,6 @@
-const { ipcRenderer } = require('electron');
 
-// Pointing to local backend to avoid HuggingFace errors on the old Render deployment
-const API_BASE = 'http://127.0.0.1:8001/api';
+// Backend calls go through the main process (window.widget.invoke) so the
+// renderer needs no CORS allowance and never sees the auth token.
 
 const ALL_LANGUAGES = {
   'hi-IN':'Hindi','bn-IN':'Bengali','ta-IN':'Tamil','te-IN':'Telugu',
@@ -73,7 +72,7 @@ function fitWindow() {
     const card = document.getElementById('card');
     if (!card) return;
     const h = card.getBoundingClientRect().height + 20; // 20 = body padding
-    ipcRenderer.send('resize-overlay', { height: Math.max(120, Math.ceil(h)) });
+    window.widget.send('resize-overlay', { height: Math.max(120, Math.ceil(h)) });
   });
 }
 
@@ -165,11 +164,11 @@ function renderResult() {
 }
 
 function bindResultEvents() {
-  document.getElementById('quitBtn')?.addEventListener('click', () => ipcRenderer.send('quit-app'));
-  document.getElementById('closeBtn')?.addEventListener('click', () => ipcRenderer.send('hide-overlay'));
+  document.getElementById('quitBtn')?.addEventListener('click', () => window.widget.send('quit-app'));
+  document.getElementById('closeBtn')?.addEventListener('click', () => window.widget.send('hide-overlay'));
 
   document.getElementById('restartBtn')?.addEventListener('click', () => {
-    ipcRenderer.send('bubble-clicked'); // triggers toggleRecording in main
+    window.widget.send('bubble-clicked'); // triggers toggleRecording in main
   });
 
   document.getElementById('toneSel')?.addEventListener('change', e => {
@@ -230,11 +229,8 @@ async function translateRaw() {
     displayText = rawText; toneText = ''; render(); return;
   }
   try {
-    const res = await fetch(`${API_BASE}/translate-text`, {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ text: rawText, source_language:'en-IN', target_language: selectedLang }),
-    });
-    const d = await res.json();
+    const d = await window.widget.invoke('backend-post-json', '/api/translate-text',
+      { text: rawText, source_language:'en-IN', target_language: selectedLang });
     displayText = d.translated_text || rawText;
   } catch { displayText = rawText; }
   toneText = '';
@@ -252,30 +248,25 @@ async function applyTone(tone) {
   try {
     let resolvedTone = tone;
     if (tone === 'Smart Suggest') {
-      const r = await fetch(`${API_BASE}/suggest-tone`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});
-      resolvedTone = (await r.json()).suggested_tone || 'Email Formal';
+      const r = await window.widget.invoke('backend-post-json', '/api/suggest-tone', { text });
+      resolvedTone = r.suggested_tone || 'Email Formal';
       selectedTone = resolvedTone;
     }
-    const r = await fetch(`${API_BASE}/rewrite-tone`,{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({text, tone:resolvedTone, user_override: tone==='Custom'?customTone:null}),
-    });
-    toneText = (await r.json()).rewritten_text || text;
+    const r = await window.widget.invoke('backend-post-json', '/api/rewrite-tone',
+      { text, tone:resolvedTone, user_override: tone==='Custom'?customTone:null });
+    toneText = r.rewritten_text || text;
 
     // ── Log Retone to Database ───────────────────────────────────────────────
     if (currentSessionId) {
-      fetch(`${API_BASE}/native-to-english/transcription`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          session_id: currentSessionId,
-          original_transcript: text,
-          tone_applied: resolvedTone,
-          rewritten_text: toneText,
-          custom_tone_desc: tone === 'Custom' ? customTone : null,
-          confidence_score: null
-        })
-      }).catch(err => console.error('Failed to log retone:', err));
+      // Main process adds the Authorization header (protected endpoint)
+      window.widget.send('log-transcription', {
+        session_id: currentSessionId,
+        original_transcript: text,
+        tone_applied: resolvedTone,
+        rewritten_text: toneText,
+        custom_tone_desc: tone === 'Custom' ? customTone : null,
+        confidence_score: null
+      });
     }
 
   } catch (e) { toneText = `⚠ ${e.message}`; }
@@ -304,11 +295,11 @@ function handleSend() {
   if (!text) return;
   const { subject, body } = parseEmailParts(text);
   // Let main process detect the frontmost app/URL and route automatically
-  ipcRenderer.send('smart-send', { text, subject, body });
+  window.widget.send('smart-send', { text, subject, body });
 }
 
 // ── IPC from main ─────────────────────────────────────────────────────────────
-ipcRenderer.on('start-recording', async () => {
+window.widget.on('start-recording', async () => {
   isRecording = true;
   liveTranscript = '';
   render();
@@ -325,34 +316,31 @@ ipcRenderer.on('start-recording', async () => {
       _audioStream = null;
       const blob = new Blob(_audioChunks, { type: 'audio/webm' });
       if (blob.size < 500) {
-        ipcRenderer.send('recording-result', { transcript: '⚠ No audio recorded.' });
+        window.widget.send('recording-result', { transcript: '⚠ No audio recorded.' });
         return;
       }
       try {
-        const formData = new FormData();
-        formData.append('file', blob, 'recording.webm');
-        const res = await fetch(`${API_BASE}/translate-audio`, { method: 'POST', body: formData });
-        if (!res.ok) { const e = await res.json().catch(()=>({})); throw new Error(e.detail||`HTTP ${res.status}`); }
-        const data = await res.json();
-        ipcRenderer.send('recording-result', { transcript: data.transcript || '⚠ Could not transcribe.' });
+        const data = await window.widget.invoke('backend-translate-audio', new Uint8Array(await blob.arrayBuffer()));
+        window.widget.send('recording-result', { transcript: data.transcript || '⚠ Could not transcribe.' });
       } catch (e) {
-        ipcRenderer.send('recording-result', { transcript: `⚠ ${e.message}` });
+        const msg = String(e.message).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+        window.widget.send('recording-result', { transcript: `⚠ ${msg}` });
       }
     };
     _mediaRecorder.start(500);
   } catch (e) {
-    ipcRenderer.send('recording-result', { transcript: '⚠ Microphone access denied.' });
+    window.widget.send('recording-result', { transcript: '⚠ Microphone access denied.' });
   }
 });
 
-ipcRenderer.on('stop-recording', () => {
+window.widget.on('stop-recording', () => {
   stopRecTimer();
   stopWaveAnim();
   if (_mediaRecorder?.state !== 'inactive') _mediaRecorder.stop();
   else if (_audioStream) { _audioStream.getTracks().forEach(t => t.stop()); _audioStream = null; }
 });
 
-ipcRenderer.on('cancel-recording', () => {
+window.widget.on('cancel-recording', () => {
   stopRecTimer();
   stopWaveAnim();
   isRecording = false;
@@ -361,10 +349,10 @@ ipcRenderer.on('cancel-recording', () => {
     _mediaRecorder.stop();
   }
   if (_audioStream) { _audioStream.getTracks().forEach(t => t.stop()); _audioStream = null; }
-  ipcRenderer.send('hide-overlay');
+  window.widget.send('hide-overlay');
 });
 
-ipcRenderer.on('show-result', (_, { transcript, sessionId }) => {
+window.widget.on('show-result', ({ transcript, sessionId }) => {
   stopRecTimer();
   stopWaveAnim();
   isRecording = false;
@@ -380,13 +368,13 @@ ipcRenderer.on('show-result', (_, { transcript, sessionId }) => {
   detectActiveDomain();
 });
 
-ipcRenderer.on('live-transcript', (_, text) => {
+window.widget.on('live-transcript', (text) => {
   liveTranscript = text;
   const el = document.getElementById('liveText');
   if (el && text?.trim()) el.textContent = text;
 });
 
-ipcRenderer.on('set-config', (_, cfg) => {
+window.widget.on('set-config', (cfg) => {
   if (cfg.languages?.length > 0) {
     configuredLangs = cfg.languages.filter(c => ALL_LANGUAGES[c]);
     if (configuredLangs.length > 0 && !configuredLangs.includes(selectedLang)) selectedLang = configuredLangs[0];
@@ -402,8 +390,8 @@ const DOMAIN_RULES = [
   { pattern:/web\.whatsapp\.com/,                      label:'WhatsApp', target:'whatsapp', sendMode:'textbox' },
   { pattern:/www\.linkedin\.com/,                      label:'LinkedIn', target:'linkedin', sendMode:'textbox' },
 ];
-function detectActiveDomain() { ipcRenderer.send('get-active-url'); }
-ipcRenderer.on('active-url', (_, url) => {
+function detectActiveDomain() { window.widget.send('get-active-url'); }
+window.widget.on('active-url', (url) => {
   detectedDomain = null;
   if (url) for (const r of DOMAIN_RULES) if (r.pattern.test(url)) { detectedDomain = r; break; }
   const btn = document.getElementById('sendBtn');

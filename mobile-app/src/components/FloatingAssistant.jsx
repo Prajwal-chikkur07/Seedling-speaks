@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect } from 'react';
+import { useRef, useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -7,42 +7,45 @@ import {
   Animated,
   PanResponder,
   Dimensions,
-  Platform,
   Linking,
   Alert,
   ActivityIndicator,
 } from 'react-native';
-import { Audio } from 'expo-av';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
-import { useRouter } from 'expo-router';
 import { useApp } from '../context/AppContext';
 import { COLORS } from '../constants/colors';
 import api from '../services/api';
+import { ensureMicPermission, startRecordingSession, stopRecordingSafely, resetAudioMode } from '../services/recording';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const BUBBLE_SIZE = 64;
 const MENU_WIDTH = 260;
 
+// `tone` must be one of TONES (see constants/languages) — the backend falls
+// back to "Email Formal" for anything else.
 const APP_CONTEXTS = [
-  { id: 'whatsapp', label: 'WhatsApp', icon: '💬', color: '#25D366', tone: 'Casual', url: 'whatsapp://send?text=' },
-  { id: 'slack', label: 'Slack', icon: '#️⃣', color: '#4A154B', tone: 'Professional', url: 'slack://open' },
-  { id: 'linkedin', label: 'LinkedIn', icon: '💼', color: '#0077B5', tone: 'Formal', url: 'https://www.linkedin.com' },
-  { id: 'gmail', label: 'Gmail', icon: '✉️', color: '#EA4335', tone: 'Professional', url: 'mailto:' },
+  { id: 'whatsapp', label: 'WhatsApp', icon: '💬', color: '#25D366', tone: 'WhatsApp Business', url: (t) => `whatsapp://send?text=${encodeURIComponent(t)}` },
+  { id: 'slack', label: 'Slack', icon: '#️⃣', color: '#4A154B', tone: 'Slack', url: () => 'slack://open' },
+  { id: 'linkedin', label: 'LinkedIn', icon: '💼', color: '#0077B5', tone: 'LinkedIn', url: () => 'https://www.linkedin.com' },
+  { id: 'gmail', label: 'Gmail', icon: '✉️', color: '#EA4335', tone: 'Email Formal', url: (t) => `mailto:?body=${encodeURIComponent(t)}` },
 ];
 
-export default function FloatingAssistant() {
-  const router = useRouter();
-  const { state, incrementUsage, addHistory } = useApp();
-  const { floatingAssistantEnabled } = state;
+const INITIAL_POS = { x: SCREEN_WIDTH - BUBBLE_SIZE - 20, y: SCREEN_HEIGHT - 150 };
 
-  const pan = useRef(new Animated.ValueXY({ x: SCREEN_WIDTH - BUBBLE_SIZE - 20, y: SCREEN_HEIGHT - 150 })).current;
+export default function FloatingAssistant() {
+  const { state, incrementUsage, addHistory } = useApp();
+  const { floatingAssistantEnabled, selectedLanguage, selectedLanguageName } = state;
+
+  const pan = useRef(new Animated.ValueXY(INITIAL_POS)).current;
+  const [bubblePos, setBubblePos] = useState(INITIAL_POS); // settled position, used to place the menu
   const [isOpen, setIsOpen] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [selectedContext, setSelectedContext] = useState(APP_CONTEXTS[0]);
   const [recording, setRecording] = useState(null);
-  
+  const recordingRef = useRef(null);
+
   const menuScale = useRef(new Animated.Value(0)).current;
 
   const panResponder = useRef(
@@ -55,39 +58,60 @@ export default function FloatingAssistant() {
       onPanResponderRelease: () => {
         pan.flattenOffset();
         const targetX = pan.x._value > SCREEN_WIDTH / 2 ? SCREEN_WIDTH - BUBBLE_SIZE - 10 : 10;
+        setBubblePos({ x: targetX, y: pan.y._value });
         Animated.spring(pan.x, { toValue: targetX, useNativeDriver: false }).start();
       },
     })
   ).current;
 
+  // Release the mic when the assistant is disabled or unmounted.
+  useEffect(() => {
+    if (floatingAssistantEnabled) return undefined;
+    discardRecording();
+    return undefined;
+  }, [floatingAssistantEnabled]);
+
+  useEffect(() => () => { discardRecording(); }, []);
+
+  function discardRecording() {
+    const rec = recordingRef.current;
+    recordingRef.current = null;
+    if (!rec) return;
+    stopRecordingSafely(rec).then(resetAudioMode);
+    setRecording(null);
+    setIsRecording(false);
+  }
+
   if (!floatingAssistantEnabled) return null;
 
   async function startRecording() {
+    if (recordingRef.current) return;
     try {
-      const perm = await Audio.requestPermissionsAsync();
-      if (!perm.granted) return;
-      await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
-      const { recording: rec } = await Audio.Recording.createAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
+      if (!(await ensureMicPermission())) return;
+      const rec = await startRecordingSession();
+      recordingRef.current = rec;
       setRecording(rec);
       setIsRecording(true);
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     } catch (e) {
-      console.error(e);
+      Alert.alert('Error', 'Could not start recording: ' + e.message);
     }
   }
 
   async function stopAndProcess() {
     if (!recording) return;
+    recordingRef.current = null;
     setIsRecording(false);
     setIsProcessing(true);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
     try {
-      await recording.stopAndUnloadAsync();
-      const uri = recording.getURI();
-      
-      // 1. Transcribe & Translate to English
-      const transResult = await api.translateAudioFromBlob(uri, 'hi-IN'); // Default to auto/Hindi
+      const uri = await stopRecordingSafely(recording);
+      await resetAudioMode();
+      if (!uri) throw new Error('No audio was recorded.');
+
+      // 1. Transcribe & Translate to English (from the user's default language)
+      const transResult = await api.translateAudioFromBlob(uri, selectedLanguage);
       incrementUsage('sarvamCalls');
 
       if (transResult.transcript) {
@@ -97,14 +121,20 @@ export default function FloatingAssistant() {
 
         // 3. Copy to Clipboard
         const finalText = retoned.rewritten_text;
-        await Clipboard.setStringAsync(finalText);
+        let copied = true;
+        try {
+          await Clipboard.setStringAsync(finalText);
+        } catch {
+          copied = false;
+        }
 
         // 4. Save to History
         addHistory({
           id: Date.now().toString(),
           text: transResult.transcript,
           native: finalText,
-          language: selectedContext.tone,
+          language: selectedLanguageName,
+          tone: selectedContext.tone,
           type: 'widget',
           timestamp: new Date().toISOString(),
         });
@@ -112,11 +142,14 @@ export default function FloatingAssistant() {
         // 5. Success Feedback & Open App
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         
-        if (selectedContext.url) {
-          Linking.openURL(selectedContext.url).catch(() => {
-            Alert.alert('App not found', `Check your clipboard, the ${selectedContext.tone} translation is copied!`);
-          });
-        }
+        Linking.openURL(selectedContext.url(finalText)).catch(() => {
+          Alert.alert(
+            'App not found',
+            copied
+              ? `Check your clipboard, the ${selectedContext.tone} message is copied!`
+              : `Couldn't open ${selectedContext.label}. Your message is saved in History.`,
+          );
+        });
       }
     } catch (e) {
       Alert.alert('Error', 'Assistant failed to process: ' + e.message);
@@ -146,8 +179,8 @@ export default function FloatingAssistant() {
             styles.menu, 
             { 
               transform: [{ scale: menuScale }],
-              bottom: SCREEN_HEIGHT - pan.y._value + 10,
-              right: SCREEN_WIDTH - pan.x._value - BUBBLE_SIZE,
+              bottom: SCREEN_HEIGHT - bubblePos.y + 10,
+              right: SCREEN_WIDTH - bubblePos.x - BUBBLE_SIZE,
             }
           ]}
         >

@@ -169,7 +169,6 @@
   </div>
 
   <script>
-    const { ipcRenderer } = require('electron');
 
     const signInBtn = document.getElementById('signInBtn');
     const waitingState = document.getElementById('waitingState');
@@ -177,11 +176,11 @@
     signInBtn.addEventListener('click', () => {
       signInBtn.style.display = 'none';
       waitingState.classList.add('visible');
-      ipcRenderer.send('open-browser-auth');
+      window.widget.send('open-browser-auth');
     });
 
     // If auth succeeds, main process will close this window
-    ipcRenderer.on('auth-failed', () => {
+    window.widget.on('auth-failed', () => {
       signInBtn.style.display = 'flex';
       waitingState.classList.remove('visible');
     });

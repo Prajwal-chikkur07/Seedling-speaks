@@ -1,10 +1,6 @@
 """Tests for /api/translate-text endpoint."""
 from fastapi.testclient import TestClient
 from unittest.mock import patch
-import sys, os
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
 from main import app
 
 client = TestClient(app)
@@ -43,13 +39,11 @@ def test_successful_translation():
     assert resp.json()["translated_text"] == "नमस्ते"
 
 
-def test_translation_service_error_returns_original_text():
+def test_translation_service_error_returns_502_without_internal_details():
     with patch(
         "routers.translation_router.translate_text",
         side_effect=Exception("Sarvam API unreachable"),
     ):
         resp = post({"text": "Hello", "source_language": "en-IN", "target_language": "hi-IN"})
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["translated_text"] == "Hello"
-    assert "error" in data
+    assert resp.status_code == 502
+    assert "Sarvam API unreachable" not in resp.text

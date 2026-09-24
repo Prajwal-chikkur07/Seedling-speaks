@@ -2,15 +2,15 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { Mic, MicOff, X, Send, Copy, Check, Loader2, Languages } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import * as api from '../services/api';
+import { LANG_LABELS } from '../constants/languages';
 
-const LANG_LABELS = {
-  'hi-IN': 'Hindi', 'bn-IN': 'Bengali', 'ta-IN': 'Tamil', 'te-IN': 'Telugu',
-  'ml-IN': 'Malayalam', 'mr-IN': 'Marathi', 'gu-IN': 'Gujarati',
-  'kn-IN': 'Kannada', 'pa-IN': 'Punjabi', 'or-IN': 'Odia',
-};
+function pickMimeType() {
+  const types = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg'];
+  return types.find(t => MediaRecorder.isTypeSupported(t)) || '';
+}
 
 export default function MobileWidget() {
-  const { state } = useApp();
+  const { state, showError } = useApp();
   const [open, setOpen] = useState(false);
   const [recording, setRecording] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -26,31 +26,54 @@ export default function MobileWidget() {
   const chunksRef = useRef([]);
   const streamRef = useRef(null);
   const timerRef = useRef(null);
+  const startingRef = useRef(false);
+  const cancelStartRef = useRef(false);
   // Sync lang when profile default changes
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLang(state.selectedLanguage);
   }, [state.selectedLanguage]);
 
+  // Release the mic and timer if unmounted mid-recording
+  useEffect(() => () => {
+    clearInterval(timerRef.current);
+    if (mediaRef.current?.state === 'recording') {
+      mediaRef.current.onstop = null;
+      mediaRef.current.stop();
+    }
+    streamRef.current?.getTracks().forEach(t => t.stop());
+  }, []);
+
   const startRec = useCallback(async () => {
+    if (startingRef.current || mediaRef.current?.state === 'recording') return;
+    startingRef.current = true;
+    cancelStartRef.current = false;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (cancelStartRef.current) {
+        // Released before the mic was ready
+        stream.getTracks().forEach(t => t.stop());
+        startingRef.current = false;
+        return;
+      }
       streamRef.current = stream;
       chunksRef.current = [];
-      const mr = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      const mimeType = pickMimeType();
+      const mr = new MediaRecorder(stream, mimeType ? { mimeType } : {});
+      const blobType = mr.mimeType || 'audio/webm';
+      const ext = blobType.includes('mp4') ? 'm4a' : blobType.includes('ogg') ? 'ogg' : 'webm';
       mr.ondataavailable = e => { if (e.data.size > 0) chunksRef.current.push(e.data); };
       mr.onstop = async () => {
         setLoading(true);
         try {
-          const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
-          const res = await api.translateAudioFromBlob(blob, 'widget.webm');
+          const blob = new Blob(chunksRef.current, { type: blobType });
+          const res = await api.translateAudioFromBlob(blob, `widget.${ext}`);
           const text = res.transcript?.trim() || '';
           setTranscript(text);
           if (text) {
             const t = await api.translateText(text, lang);
             setTranslated(t);
           }
-         
         } catch { setTranscript('Could not transcribe. Try again.'); }
         setLoading(false);
       };
@@ -59,13 +82,23 @@ export default function MobileWidget() {
       setRecording(true);
       setRecSecs(0);
       timerRef.current = setInterval(() => setRecSecs(s => s + 1), 1000);
-    } catch { alert('Microphone access denied'); }
-  }, [lang]);
+      startingRef.current = false;
+    } catch (err) {
+      startingRef.current = false;
+      streamRef.current?.getTracks().forEach(t => t.stop());
+      streamRef.current = null;
+      showError(err?.name === 'NotAllowedError' || err?.name === 'SecurityError'
+        ? 'Microphone access denied'
+        : 'Could not start recording');
+    }
+  }, [lang, showError]);
 
   const stopRec = useCallback(() => {
+    if (startingRef.current) cancelStartRef.current = true;
     clearInterval(timerRef.current);
-    mediaRef.current?.stop();
+    if (mediaRef.current?.state === 'recording') mediaRef.current.stop();
     streamRef.current?.getTracks().forEach(t => t.stop());
+    streamRef.current = null;
     setRecording(false);
   }, []);
 
@@ -170,7 +203,8 @@ export default function MobileWidget() {
                   <div className="flex flex-col items-center gap-3 py-4">
                     <button
                       onTouchStart={startRec}
-                      onTouchEnd={stopRec}
+                      // preventDefault suppresses the emulated mousedown that would start a second recording
+                      onTouchEnd={e => { e.preventDefault(); stopRec(); }}
                       onMouseDown={startRec}
                       onMouseUp={stopRec}
                       disabled={loading}

@@ -14,7 +14,7 @@ import time
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -25,6 +25,7 @@ from services.linkedin_service import (
     format_linkedin_post,
     mock_linkedin_share,
 )
+from services.clerk_auth import get_current_user_id
 
 router = APIRouter(prefix="/api", tags=["sharing"])
 logger = logging.getLogger(__name__)
@@ -42,8 +43,6 @@ class EmailRequest(BaseModel):
     tone: Optional[str] = None
     language: Optional[str] = None
     use_sendgrid: bool = False
-    smtp_username: Optional[str] = None
-    smtp_password: Optional[str] = None
 
 
 class SlackRequest(BaseModel):
@@ -78,15 +77,15 @@ class ExportRequest(BaseModel):
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.post("/send/email")
-async def handle_send_email(request: EmailRequest):
-    """Sends translated text via email (SMTP or SendGrid)."""
+def handle_send_email(request: EmailRequest, _user_id: str = Depends(get_current_user_id)):
+    """Sends translated text via email (SMTP or SendGrid) using the server's configured credentials."""
     if not request.text or len(request.text.strip()) == 0:
         raise HTTPException(status_code=400, detail="Text cannot be empty")
     if not request.to_email or "@" not in request.to_email:
         raise HTTPException(status_code=400, detail="Invalid email address")
 
     try:
-        logger.info(f"Sending email to {request.to_email}")
+        logger.info("Sending email")
         plain_text, html_body = format_email_body(
             request.text, tone=request.tone, language=request.language
         )
@@ -96,13 +95,11 @@ async def handle_send_email(request: EmailRequest):
             body=plain_text,
             html_body=html_body,
             use_sendgrid=request.use_sendgrid,
-            smtp_username=request.smtp_username,
-            smtp_password=request.smtp_password,
         )
         return result
     except Exception as e:
         logger.error(f"Email send error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to send email")
 
 
 @router.post("/send/slack")
@@ -129,7 +126,7 @@ async def handle_send_slack(request: SlackRequest):
 
 
 @router.post("/send/linkedin")
-async def handle_send_linkedin(request: LinkedInRequest):
+def handle_send_linkedin(request: LinkedInRequest, _user_id: str = Depends(get_current_user_id)):
     """Shares translated text to LinkedIn."""
     if not request.text or len(request.text.strip()) == 0:
         raise HTTPException(status_code=400, detail="Text cannot be empty")
@@ -153,11 +150,11 @@ async def handle_send_linkedin(request: LinkedInRequest):
         return result
     except Exception as e:
         logger.error(f"LinkedIn share error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to share to LinkedIn")
 
 
 @router.post("/share/create")
-async def create_share_link(request: ShareLinkRequest):
+def create_share_link(request: ShareLinkRequest, _user_id: str = Depends(get_current_user_id)):
     """Creates a shareable read-only link for a transcript/message."""
     if not request.text.strip():
         raise HTTPException(status_code=400, detail="Text cannot be empty")

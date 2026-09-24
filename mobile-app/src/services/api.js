@@ -28,7 +28,7 @@ function getBaseUrl() {
 }
 
 const BASE_URL = getBaseUrl();
-console.log('[api] BASE_URL =', BASE_URL);
+if (__DEV__) console.log('[api] BASE_URL =', BASE_URL);
 
 const client = axios.create({
   baseURL: BASE_URL,
@@ -36,18 +36,31 @@ const client = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
+// Clerk session tokens expire in ~60s, so fetch a fresh one for every request
+// instead of caching it. The getter is registered from the root layout.
+let tokenGetter = null;
+
+export function setAuthTokenGetter(getter) {
+  tokenGetter = getter;
+}
+
+client.interceptors.request.use(async (config) => {
+  if (tokenGetter) {
+    try {
+      const token = await tokenGetter();
+      if (token) config.headers.Authorization = `Bearer ${token}`;
+    } catch (e) {
+      if (__DEV__) console.warn('[api] failed to get auth token', e);
+    }
+  }
+  return config;
+});
+
 export function setApiBaseUrl(url) {
   client.defaults.baseURL = url;
 }
 
 const api = {
-  setAuthToken(token) {
-    if (token) {
-      client.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-    } else {
-      delete client.defaults.headers.common['Authorization'];
-    }
-  },
 
   // Audio
   async translateAudioFromBlob(uri, language = 'hi-IN') {
@@ -58,7 +71,7 @@ const api = {
     const mime = mimeMap[ext] || 'audio/mp4';
     const fileName = `recording.${ext}`;
 
-    console.log('[api] translateAudio:', { fileUri, ext, mime, language });
+    if (__DEV__) console.log('[api] translateAudio:', { fileUri, ext, mime, language });
 
     const form = new FormData();
     form.append('file', { uri: fileUri, name: fileName, type: mime });
@@ -116,14 +129,18 @@ const api = {
 
   // Video
   async uploadVideo(videoUri, filename) {
+    const name = filename || videoUri.split('/').pop() || 'video.mp4';
+    const ext = name.split('.').pop()?.toLowerCase();
+    const mimeMap = { mp4: 'video/mp4', m4v: 'video/x-m4v', mov: 'video/quicktime', webm: 'video/webm', mkv: 'video/x-matroska', avi: 'video/x-msvideo' };
     const form = new FormData();
     form.append('file', {
       uri: videoUri,
-      name: filename || 'video.mp4',
-      type: 'video/mp4',
+      name,
+      type: mimeMap[ext] || 'video/mp4',
     });
     const { data } = await client.post('/api/video/upload', form, {
       headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 300000,
     });
     return data;
   },

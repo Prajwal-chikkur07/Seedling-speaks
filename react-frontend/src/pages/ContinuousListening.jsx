@@ -81,9 +81,10 @@ export default function ContinuousListening() {
       const url = URL.createObjectURL(blob);
       const audio = new Audio(url);
       lineAudioRef.current = audio;
-      audio.onended = () => { setSpeakingLineId(null); URL.revokeObjectURL(url); };
-      audio.onerror = () => { setSpeakingLineId(null); URL.revokeObjectURL(url); };
-      audio.play();
+      const finish = () => { setSpeakingLineId(null); URL.revokeObjectURL(url); };
+      audio.onended = finish;
+      audio.onerror = finish;
+      audio.play().catch(finish);
     } catch { setSpeakingLineId(null); }
   }, [speakingLineId, state.selectedSarvamVoice]);
 
@@ -103,7 +104,7 @@ export default function ContinuousListening() {
       }));
       const result = await api.synthesizeConversation({ segments: mapped, target_language: 'en-IN' });
       setSynthLines(result.segments || []);
-    } catch (e) { showError(e.response?.data?.detail || 'Synthesis failed'); }
+    } catch { /* error toast is shown by the API client */ }
     finally { setIsSynthesizing(false); }
   };
 
@@ -115,7 +116,7 @@ export default function ContinuousListening() {
     audioRef.current = audio;
     setPlayingIdx(idx);
     audio.onended = () => { setPlayingIdx(null); if (idx + 1 < synthLines.length) playSegment(idx + 1); };
-    audio.play();
+    audio.play().catch(() => setPlayingIdx(null));
   };
   const stopPlayback = () => { audioRef.current?.pause(); audioRef.current = null; setPlayingIdx(null); };
 

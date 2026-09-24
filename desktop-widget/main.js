@@ -1,6 +1,7 @@
 const { app, BrowserWindow, globalShortcut, ipcMain, screen, shell } = require('electron');
 const http = require('http');
-const { spawnSync } = require('child_process');
+const { execFile } = require('child_process');
+const crypto = require('crypto');
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
@@ -19,9 +20,60 @@ let toastTimer = null;
 let isClickModeActive = false;
 let clickModeLang = 'hi-IN';
 
+// ── Endpoints / ports (single source of truth) ───────────────────────────────
+const BACKEND_URL = process.env.SEEDLING_BACKEND_URL || 'http://127.0.0.1:8001';
+const WEB_APP_URL = 'https://seedlingspeaks.vercel.app';
+const CONTROL_PORT = 27182;
+// Web origins allowed to talk to the local control server
+const ALLOWED_ORIGINS = new Set([
+  WEB_APP_URL,
+  'http://localhost:5173', 'http://127.0.0.1:5173',
+  'http://localhost:3000', 'http://127.0.0.1:3000',
+]);
+// JSON endpoints the overlay renderer may call through the main process
+const RENDERER_JSON_PATHS = new Set(['/api/translate-text', '/api/suggest-tone', '/api/rewrite-tone']);
+
+// Every window: isolated, sandboxed renderer; preload.js exposes window.widget
+const SECURE_PREFS = {
+  preload: path.join(__dirname, 'preload.js'),
+  contextIsolation: true,
+  nodeIntegration: false,
+  sandbox: true,
+};
+
+// ── Async helpers (never block the main process) ─────────────────────────────
+function runFile(cmd, args, opts = {}) {
+  return new Promise((resolve) => {
+    execFile(cmd, args, { encoding: 'utf8', ...opts }, (error, stdout, stderr) => {
+      resolve({ error, stdout: stdout || '', stderr: stderr || '' });
+    });
+  });
+}
+
+async function backendFetch(pathname, init = {}, timeoutMs = 30000) {
+  const res = await fetch(BACKEND_URL + pathname, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+  if (!res.ok) {
+    let detail = '';
+    try { const d = await res.json(); if (typeof d.detail === 'string') detail = d.detail; } catch { }
+    throw new Error(detail || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+function postJson(pathname, body, { auth = false, timeoutMs = 30000 } = {}) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (auth) headers.Authorization = `Bearer ${(currentUser && currentUser.token) || ''}`;
+  return backendFetch(pathname, { method: 'POST', headers, body: JSON.stringify(body) }, timeoutMs);
+}
+
+function translateAudio(bytes) {
+  const form = new FormData();
+  form.append('file', new Blob([bytes], { type: 'audio/webm' }), 'recording.webm');
+  return backendFetch('/api/translate-audio', { method: 'POST', body: form }, 60000);
+}
+
 // ── Auth state ────────────────────────────────────────────────────────────────
-const CLERK_PUBLISHABLE_KEY = 'pk_test_dW5pdGVkLW1vY2Nhc2luLTM5LmNsZXJrLmFjY291bnRzLmRldiQ';
-let currentUser = null; // { clerkId, email, firstName, lastName }
+let currentUser = null; // { clerkId, email, firstName, lastName, token }
 let AUTH_FILE = path.join(os.homedir(), '.seedlingspeaks-auth.json');
 
 function loadAuth() {
@@ -52,7 +104,6 @@ function clearAuth() {
 let isRecording = false;
 
 let widgetConfig = { mode: 'nativeToEnglish', languages: ['hi-IN'] };
-let lastFrontApp = null; // track which app was active before overlay opened
 
 // ── Persist widget config to disk ─────────────────────────────────────────────
 // CONFIG_FILE is resolved after app is ready (app.getPath needs ready state)
@@ -76,91 +127,135 @@ function saveWidgetConfig() {
 }
 
 // ── Control server ────────────────────────────────────────────────────────────
+// Local HTTP API used by the web app. Only allowlisted browser origins are
+// answered, the Host header must be our loopback name (blocks DNS rebinding),
+// and state-changing routes are POST-only.
+//
+// /auth-callback contract (web DesktopAuth page):
+//   POST http://127.0.0.1:27182/auth-callback, Content-Type: application/json
+//   body: { id, email, firstName, lastName, token, state }
+//   `state` must echo the `state` query param from the /desktop-auth URL the
+//   widget opened. It is optional for now (older web builds omit it), but a
+//   sign-in must have been started from this widget and, if sent, must match.
+let pendingAuthState = null; // { value, expires }
+const AUTH_STATE_TTL_MS = 10 * 60 * 1000;
+
+function sendJson(res, status, obj) {
+  res.writeHead(status, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(obj));
+}
+
+function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 64 * 1024) req.destroy(); });
+    req.on('end', () => { try { resolve(JSON.parse(body)); } catch (e) { reject(e); } });
+    req.on('error', reject);
+  });
+}
+
+function authStateMatches(state) {
+  if (!pendingAuthState || Date.now() > pendingAuthState.expires) return false;
+  if (state === undefined || state === null || state === '') return true; // legacy web page
+  const a = Buffer.from(String(state));
+  const b = Buffer.from(pendingAuthState.value);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+function setBubbleEnabled(enabled) {
+  isBubbleEnabled = enabled;
+  if (enabled) { if (bubbleWin) bubbleWin.show(); }
+  else { if (bubbleWin) bubbleWin.hide(); hideOverlay(); }
+}
+
 function startControlServer() {
-  const server = http.createServer((req, res) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
+  const server = http.createServer(async (req, res) => {
+    const origin = req.headers.origin;
+    const host = req.headers.host;
+    const hostOk = host === `127.0.0.1:${CONTROL_PORT}` || host === `localhost:${CONTROL_PORT}`;
+    if (!hostOk || !ALLOWED_ORIGINS.has(origin)) {
+      sendJson(res, 403, { error: 'forbidden' });
+      return;
+    }
+
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
     if (req.method === 'OPTIONS') {
-      res.writeHead(200);
+      // Chrome Private Network Access preflight (public site -> loopback)
+      res.setHeader('Access-Control-Allow-Private-Network', 'true');
+      res.writeHead(204);
       res.end();
       return;
     }
 
-    res.setHeader('Content-Type', 'application/json');
-
-    if (req.url === '/status') {
-      res.writeHead(200); res.end(JSON.stringify({ enabled: isBubbleEnabled }));
-    } else if (req.url === '/config' && req.method === 'GET') {
-      res.writeHead(200); res.end(JSON.stringify(widgetConfig));
-    } else if (req.url === '/config' && req.method === 'POST') {
-      let body = '';
-      req.on('data', c => body += c);
-      req.on('end', () => {
-        try {
-          const inc = JSON.parse(body);
+    const route = `${req.method} ${req.url.split('?')[0]}`;
+    try {
+      switch (route) {
+        case 'GET /status':
+          return sendJson(res, 200, { enabled: isBubbleEnabled });
+        case 'GET /config':
+          return sendJson(res, 200, widgetConfig);
+        case 'POST /config': {
+          const inc = await readJsonBody(req);
           widgetConfig = {
             mode: 'nativeToEnglish',
             languages: Array.isArray(inc.languages) && inc.languages.length > 0 ? inc.languages : ['hi-IN'],
           };
           saveWidgetConfig();
           if (overlayWin) overlayWin.webContents.send('set-config', widgetConfig);
-          res.writeHead(200); res.end(JSON.stringify(widgetConfig));
-        } catch { res.writeHead(400); res.end(JSON.stringify({ error: 'bad payload' })); }
-      });
-      return;
-    } else if (req.url === '/enable') {
-      isBubbleEnabled = true; if (bubbleWin) bubbleWin.show();
-      res.writeHead(200); res.end(JSON.stringify({ enabled: true }));
-    } else if (req.url === '/disable') {
-      isBubbleEnabled = false; if (bubbleWin) bubbleWin.hide();
-      hideOverlay();
-      res.writeHead(200); res.end(JSON.stringify({ enabled: false }));
-    } else if (req.url === '/toggle') {
-      isBubbleEnabled = !isBubbleEnabled;
-      if (isBubbleEnabled) { if (bubbleWin) bubbleWin.show(); }
-      else { if (bubbleWin) bubbleWin.hide(); hideOverlay(); }
-      res.writeHead(200); res.end(JSON.stringify({ enabled: isBubbleEnabled }));
-    } else if (req.url === '/auth-callback' && req.method === 'POST') {
-      // ── Received login data from browser ───────────────────────────────────
-      let body = '';
-      req.on('data', c => body += c);
-      req.on('end', () => {
-        try {
-          const userData = JSON.parse(body);
-          if (userData && userData.id) {
-            const user = {
-              clerkId: userData.id,
-              email: userData.email,
-              firstName: userData.firstName || '',
-              lastName: userData.lastName || '',
-              token: userData.token
-            };
-            saveAuth(user);
-            onAuthSuccess();
-            res.writeHead(200); res.end(JSON.stringify({ status: 'ok' }));
-          } else {
-            res.writeHead(400); res.end(JSON.stringify({ error: 'invalid user data' }));
-          }
-        } catch (e) {
-          res.writeHead(400); res.end(JSON.stringify({ error: 'bad payload' }));
+          return sendJson(res, 200, widgetConfig);
         }
-      });
-      return;
-    } else {
-      res.writeHead(404); res.end(JSON.stringify({ error: 'not found' }));
+        case 'POST /enable':
+          setBubbleEnabled(true);
+          return sendJson(res, 200, { enabled: true });
+        case 'POST /disable':
+          setBubbleEnabled(false);
+          return sendJson(res, 200, { enabled: false });
+        case 'POST /toggle':
+          setBubbleEnabled(!isBubbleEnabled);
+          return sendJson(res, 200, { enabled: isBubbleEnabled });
+        case 'POST /auth-callback': {
+          const userData = await readJsonBody(req);
+          if (!authStateMatches(userData && userData.state)) {
+            return sendJson(res, 403, { error: 'invalid or expired sign-in request' });
+          }
+          if (!userData.id) return sendJson(res, 400, { error: 'invalid user data' });
+          pendingAuthState = null; // one-time use
+          saveAuth({
+            clerkId: userData.id,
+            email: userData.email,
+            firstName: userData.firstName || '',
+            lastName: userData.lastName || '',
+            token: userData.token,
+          });
+          onAuthSuccess();
+          return sendJson(res, 200, { status: 'ok' });
+        }
+        default:
+          if (['/enable', '/disable', '/toggle', '/auth-callback'].includes(req.url.split('?')[0])) {
+            return sendJson(res, 405, { error: 'method not allowed' });
+          }
+          return sendJson(res, 404, { error: 'not found' });
+      }
+    } catch {
+      sendJson(res, 400, { error: 'bad payload' });
     }
   });
+
+  let retries = 0;
   server.on('error', (e) => {
-    if (e.code === 'EADDRINUSE') {
-      console.warn('Port 27182 in use — killing old process and retrying…');
-      const { spawnSync: sp } = require('child_process');
-      sp('sh', ['-c', 'lsof -ti :27182 | xargs kill -9'], { encoding: 'utf8' });
-      setTimeout(() => server.listen(27182, '127.0.0.1'), 500);
+    if (e.code === 'EADDRINUSE' && retries < 5) {
+      retries++;
+      console.warn(`Port ${CONTROL_PORT} in use — retrying in 2s (${retries}/5)`);
+      setTimeout(() => server.listen(CONTROL_PORT, '127.0.0.1'), 2000);
+    } else {
+      console.error('Control server failed to start:', e.message);
     }
   });
-  server.listen(27182, '127.0.0.1', () => console.log('Control server: http://127.0.0.1:27182'));
+  server.listen(CONTROL_PORT, '127.0.0.1', () => console.log(`Control server: http://127.0.0.1:${CONTROL_PORT}`));
 }
 
 // ── Tray (Menu Bar) ───────────────────────────────────────────────────────────
@@ -193,17 +288,7 @@ function updateTrayMenu() {
       { type: 'separator' },
       { label: 'Open Settings', click: () => showOverlay('nativeToEnglish') },
       { type: 'separator' },
-      {
-        label: 'Sign Out', click: () => {
-          clearAuth();
-          isBubbleEnabled = false;
-          if (bubbleWin) bubbleWin.hide();
-          hideOverlay();
-          if (dashboardWin && !dashboardWin.isDestroyed()) dashboardWin.close();
-          createLoginWindow();
-          updateTrayMenu();
-        }
-      },
+      { label: 'Sign Out', click: () => signOut() },
     );
   } else {
     items.push(
@@ -236,23 +321,22 @@ function toggleWidgetState() {
 // ── Screenshot helper — uses macOS screencapture ──────────────────────────────
 async function captureScreen() {
   const tmpFile = path.join(os.tmpdir(), `vt_ss_${Date.now()}.png`);
-  const r = spawnSync('screencapture', ['-x', '-t', 'png', tmpFile], {
-    encoding: 'utf8', timeout: 10000,
-  });
-  const stderr = (r.stderr || '').toLowerCase();
+  const r = await runFile('screencapture', ['-x', '-t', 'png', tmpFile], { timeout: 10000 });
+  const exists = fs.existsSync(tmpFile);
+  const stderr = r.stderr.toLowerCase();
   const permissionError =
     stderr.includes('could not create image') ||
     stderr.includes('no displays') ||
     stderr.includes('permission') ||
-    (r.status !== 0 && !fs.existsSync(tmpFile));
+    (r.error && !exists);
 
   if (permissionError) {
     const err = new Error('SCREEN_PERMISSION');
     err.isPermission = true;
     throw err;
   }
-  if (r.error || !fs.existsSync(tmpFile)) {
-    throw new Error('screencapture failed: ' + (r.stderr || r.error?.message || 'unknown'));
+  if (!exists) {
+    throw new Error('screencapture failed: ' + (r.stderr || 'unknown'));
   }
   const buf = fs.readFileSync(tmpFile);
   try { fs.unlinkSync(tmpFile); } catch { }
@@ -271,27 +355,23 @@ function handleCaptureError(e) {
 }
 
 // Crop a PNG buffer using macOS sips
-function cropPng(srcPath, x, y, w, h) {
+async function cropPng(srcPath, x, y, w, h) {
   const dstPath = path.join(os.tmpdir(), `vt_crop_${Date.now()}.png`);
-  const r = spawnSync('sips', [
+  const r = await runFile('sips', [
     '-c', String(Math.round(h)), String(Math.round(w)),
     '--cropOffset', String(Math.round(y)), String(Math.round(x)),
     srcPath, '-o', dstPath,
-  ], { encoding: 'utf8', timeout: 8000 });
+  ], { timeout: 8000 });
   if (!r.error && fs.existsSync(dstPath)) return dstPath;
   return null;
 }
 
 // Call vision-translate API
 function visionTranslate(imgPath, lang) {
-  const r = spawnSync('curl', [
-    '-s', '-X', 'POST',
-    'http://127.0.0.1:8001/api/vision-translate',
-    '-F', `file=@${imgPath};type=image/png`,
-    '-F', `target_language=${lang}`,
-  ], { encoding: 'utf8', timeout: 60000 });
-  if (r.error || r.status !== 0) throw new Error(r.stderr || 'curl failed');
-  return JSON.parse(r.stdout);
+  const form = new FormData();
+  form.append('file', new Blob([fs.readFileSync(imgPath)], { type: 'image/png' }), path.basename(imgPath));
+  form.append('target_language', lang);
+  return backendFetch('/api/vision-translate', { method: 'POST', body: form }, 60000);
 }
 
 // ── Bubble hint tooltip window ────────────────────────────────────────────────
@@ -303,7 +383,7 @@ function createHintWin() {
     frame: false, transparent: true, alwaysOnTop: true,
     skipTaskbar: true, resizable: false, movable: false, hasShadow: false,
     show: false,
-    webPreferences: { nodeIntegration: true, contextIsolation: false },
+    webPreferences: { ...SECURE_PREFS },
   });
   const html = `<!DOCTYPE html><html><head><meta charset="UTF-8">
   <style>
@@ -317,8 +397,7 @@ function createHintWin() {
   </style></head><body>
   <div class="tip" id="tip">hint</div>
   <script>
-    const {ipcRenderer}=require('electron');
-    ipcRenderer.on('hint-text',(_, msg)=>{
+    window.widget.on('hint-text',(msg)=>{
       document.getElementById('tip').textContent = msg;
     });
   <\/script></body></html>`;
@@ -353,38 +432,46 @@ ipcMain.on('hide-bubble-hint', () => hideBubbleHint());
 // ── Track last active browser URL (captured before overlay shows) ─────────────
 let lastActiveUrl = '';
 let lastActiveApp = '';
+let activeContextPromise = Promise.resolve();
+
+const FRONT_APP_SCRIPT = 'tell application "System Events" to get name of first process whose frontmost is true';
+const BROWSER_URL_SCRIPTS = [
+  { match: 'chrome', script: 'tell application "Google Chrome" to get URL of active tab of front window' },
+  { match: 'brave', script: 'tell application "Brave Browser" to get URL of active tab of front window' },
+  { match: 'edge', script: 'tell application "Microsoft Edge" to get URL of active tab of front window' },
+  { match: 'safari', script: 'tell application "Safari" to get URL of current tab of front window' },
+];
+
+// Frontmost app name + URL of its active tab (only when it is a scriptable browser,
+// so we never launch or query a browser the user isn't looking at).
+async function getFrontmostContext() {
+  const appR = await runFile('osascript', ['-e', FRONT_APP_SCRIPT], { timeout: 1500 });
+  const appName = appR.stdout.trim();
+  const lower = appName.toLowerCase();
+  let url = '';
+  const browser = BROWSER_URL_SCRIPTS.find(b => lower.includes(b.match));
+  if (browser) {
+    const r = await runFile('osascript', ['-e', browser.script], { timeout: 1500 });
+    const out = r.stdout.trim();
+    if (!r.error && out && !out.includes('execution error')) url = out;
+  }
+  return { app: appName, url };
+}
 
 function captureActiveContext() {
-  // Get frontmost app first
-  const appR = spawnSync('osascript', ['-e',
-    `tell application "System Events" to get name of first process whose frontmost is true`
-  ], { encoding: 'utf8', timeout: 1500 });
-  lastActiveApp = (appR.stdout || '').trim().toLowerCase();
-
-  // Only check browser URLs if a browser is actually the frontmost app.
-  // If the user is in Kiro/VSCode/etc, don't steal their browser tabs.
-  const browserNames = ['google chrome', 'brave browser', 'microsoft edge', 'safari', 'firefox'];
-  const isBrowserFront = browserNames.some(b => lastActiveApp.includes(b.split(' ')[0]));
-
-  lastActiveUrl = '';
-  if (isBrowserFront) {
-    const urlScripts = [
-      `tell application "Google Chrome" to get URL of active tab of front window`,
-      `tell application "Brave Browser" to get URL of active tab of front window`,
-      `tell application "Microsoft Edge" to get URL of active tab of front window`,
-      `tell application "Safari" to get URL of current tab of front window`,
-    ];
-    for (const script of urlScripts) {
-      const r = spawnSync('osascript', ['-e', script], { encoding: 'utf8', timeout: 1500 });
-      const out = (r.stdout || '').trim();
-      if (!r.error && r.status === 0 && out && !out.includes('error') && !out.includes('execution error')) {
-        lastActiveUrl = out;
-        break;
-      }
-    }
-  }
-  console.log('[context] frontmost:', lastActiveApp, 'isBrowser:', isBrowserFront, 'url:', lastActiveUrl);
+  activeContextPromise = getFrontmostContext().then(({ app: appName, url }) => {
+    lastActiveApp = appName.toLowerCase();
+    lastActiveUrl = url;
+  });
 }
+
+function hostMatches(url, domain) {
+  try {
+    const host = new URL(url).hostname;
+    return host === domain || host.endsWith('.' + domain);
+  } catch { return false; }
+}
+
 function startRecording() {
   if (!isBubbleEnabled || isRecording) return;
   // Capture the active app/URL BEFORE we do anything — this is the user's target
@@ -416,26 +503,6 @@ function toggleRecording() {
   else startRecording();
 }
 
-// ── Bubble ────────────────────────────────────────────────────────────────────
-function createBubble() {
-  const { width, height } = screen.getPrimaryDisplay().workAreaSize;
-  const bw = 180, bh = 40;
-  bubbleWin = new BrowserWindow({
-    width: bw, height: bh,
-    x: Math.round(width / 2 - bw / 2), y: height - bh - 20,
-    frame: false, transparent: true, alwaysOnTop: true,
-    skipTaskbar: true, resizable: false, movable: true, hasShadow: false,
-    show: isBubbleEnabled, // auto-show if enabled
-    webPreferences: { nodeIntegration: true, contextIsolation: false },
-  });
-  bubbleWin.loadFile('bubble.html');
-  bubbleWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  bubbleWin.setAlwaysOnTop(true, 'screen-saver');
-  bubbleWin.on('closed', () => { bubbleWin = null; });
-}
-
-// ── Mode menu removed ─────────────────────────────────────────────────────────
-
 // ── Overlay (translation panel) ───────────────────────────────────────────────
 function createOverlay() {
   overlayWin = new BrowserWindow({
@@ -443,7 +510,7 @@ function createOverlay() {
     frame: false, transparent: true, alwaysOnTop: true,
     skipTaskbar: true, resizable: false, movable: true, hasShadow: false,
     show: false,
-    webPreferences: { nodeIntegration: true, contextIsolation: false },
+    webPreferences: { ...SECURE_PREFS },
   });
   overlayWin.loadFile('overlay.html');
   overlayWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
@@ -496,7 +563,7 @@ function createScreenOverlay() {
     frame: false, transparent: true, alwaysOnTop: true,
     skipTaskbar: true, resizable: false, movable: false, hasShadow: false,
     show: false,
-    webPreferences: { nodeIntegration: true, contextIsolation: false },
+    webPreferences: { ...SECURE_PREFS },
   });
   screenOverlayWin.loadFile('screen-overlay.html');
   screenOverlayWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
@@ -531,7 +598,7 @@ function openRegionSelector(lang) {
     frame: false, transparent: true, alwaysOnTop: true,
     skipTaskbar: true, resizable: false, movable: false, hasShadow: false,
     show: false,
-    webPreferences: { nodeIntegration: true, contextIsolation: false },
+    webPreferences: { ...SECURE_PREFS },
   });
   regionSelectWin.loadFile('region-select.html');
   regionSelectWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
@@ -568,7 +635,7 @@ function createToast() {
     frame: false, transparent: true, alwaysOnTop: true,
     skipTaskbar: true, resizable: false, movable: false, hasShadow: false,
     show: false,
-    webPreferences: { nodeIntegration: true, contextIsolation: false },
+    webPreferences: { ...SECURE_PREFS },
   });
   toastWin.loadFile('toast.html');
   toastWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
@@ -604,17 +671,6 @@ function showToast(data, autoDismissMs = 4000) {
   }
 }
 
-// ── Startup permission check ──────────────────────────────────────────────────
-function checkScreenPermission() {
-  const testFile = path.join(os.tmpdir(), `vt_permcheck_${Date.now()}.png`);
-  const r = spawnSync('screencapture', ['-x', '-t', 'png', testFile], {
-    encoding: 'utf8', timeout: 5000,
-  });
-  const ok = !r.error && fs.existsSync(testFile);
-  try { if (ok) fs.unlinkSync(testFile); } catch { }
-  return ok;
-}
-
 // ── Login window ──────────────────────────────────────────────────────────────
 function createLoginWindow() {
   if (loginWin && !loginWin.isDestroyed()) { loginWin.focus(); return; }
@@ -623,10 +679,7 @@ function createLoginWindow() {
     resizable: false,
     titleBarStyle: 'hiddenInset',
     backgroundColor: '#FAF8F4',
-    webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
-    },
+    webPreferences: { ...SECURE_PREFS },
   });
   loginWin.loadFile(path.join(__dirname, 'login.html'));
   loginWin.on('closed', () => { loginWin = null; });
@@ -640,7 +693,7 @@ function createDashboardWindow() {
     resizable: false,
     titleBarStyle: 'hiddenInset',
     backgroundColor: '#FAF8F4',
-    webPreferences: { nodeIntegration: true, contextIsolation: false },
+    webPreferences: { ...SECURE_PREFS },
   });
   dashboardWin.loadFile(path.join(__dirname, 'dashboard.html'));
   dashboardWin.on('closed', () => { dashboardWin = null; });
@@ -656,7 +709,7 @@ function createBubble() {
     x: sw - 300, y: sh - 180,
     frame: false, transparent: true, alwaysOnTop: true,
     resizable: false, skipTaskbar: true, hasShadow: false,
-    webPreferences: { nodeIntegration: true, contextIsolation: false },
+    webPreferences: { ...SECURE_PREFS },
   });
 
   bubbleWin.loadFile('bubble.html');
@@ -669,17 +722,16 @@ function createBubble() {
 
 // ── Browser-based Auth IPC ──────────────────────────────────────────────────
 ipcMain.on('open-browser-auth', () => {
-  // REPLACE THIS with your actual Vercel URL
-  const VERCEL_URL = 'https://seedlingspeaks.vercel.app';
-  const authUrl = `${VERCEL_URL}/desktop-auth?port=27182`;
-  shell.openExternal(authUrl);
+  // One-time nonce; the web page must echo it back as `state` in /auth-callback
+  pendingAuthState = { value: crypto.randomBytes(16).toString('hex'), expires: Date.now() + AUTH_STATE_TTL_MS };
+  shell.openExternal(`${WEB_APP_URL}/desktop-auth?port=${CONTROL_PORT}&state=${pendingAuthState.value}`);
 });
 
 ipcMain.handle('get-user-info', () => currentUser);
 ipcMain.handle('get-widget-enabled', () => isBubbleEnabled);
 
 function warmUpBackend() {
-  fetch('http://127.0.0.1:8001/api/health')
+  fetch(`${BACKEND_URL}/api/health`)
     .then(() => console.log('Backend warmed up successfully'))
     .catch(err => console.error('Failed to warm up backend:', err));
 }
@@ -704,7 +756,7 @@ ipcMain.on('disable-widget', () => {
   if (dashboardWin) dashboardWin.webContents.send('widget-state-changed', false);
 });
 
-ipcMain.on('sign-out', () => {
+function signOut() {
   clearAuth();
   isBubbleEnabled = false;
   if (bubbleWin) bubbleWin.hide();
@@ -712,7 +764,9 @@ ipcMain.on('sign-out', () => {
   if (dashboardWin && !dashboardWin.isDestroyed()) dashboardWin.close();
   createLoginWindow();
   updateTrayMenu();
-});
+}
+
+ipcMain.on('sign-out', () => signOut());
 
 // Called after successful login
 function onAuthSuccess() {
@@ -747,24 +801,15 @@ app.whenReady().then(() => {
   const { spawn } = require('child_process');
   const fnWatcherPath = path.join(__dirname, 'fn_watcher');
 
-  // Check Input Monitoring permission — if missing, open System Settings directly
-  function checkAndRequestInputMonitoring() {
-    const test = spawnSync(fnWatcherPath, [], {
-      timeout: 1500, encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    // If it exits immediately with no output, permission is likely denied
-    const denied = test.status !== null && test.status !== 0 && !test.stdout?.trim();
-    if (denied || (test.stderr || '').toLowerCase().includes('not permitted')) {
-      // Open Input Monitoring pane directly
-      spawnSync('open', ['x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent'], { encoding: 'utf8' });
-      showToast({
-        type: 'info',
-        message: '⚠ Enable Input Monitoring for Electron\nSystem Settings → Privacy → Input Monitoring',
-      }, 10000);
-      return false;
-    }
-    return true;
+  let inputMonitoringPrompted = false;
+  function promptInputMonitoring() {
+    if (inputMonitoringPrompted) return;
+    inputMonitoringPrompted = true;
+    execFile('open', ['x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent'], () => { });
+    showToast({
+      type: 'info',
+      message: '⚠ Enable Input Monitoring for Electron\nSystem Settings → Privacy → Input Monitoring',
+    }, 10000);
   }
 
   try {
@@ -772,18 +817,10 @@ app.whenReady().then(() => {
     let pressStart = 0;
     const MIN_HOLD_MS = 300;
     let buf = '';
-    let permissionChecked = false;
 
     fnProc.stderr?.on('data', (chunk) => {
       const msg = chunk.toString().toLowerCase();
-      if (!permissionChecked && (msg.includes('not permitted') || msg.includes('denied'))) {
-        permissionChecked = true;
-        spawnSync('open', ['x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent'], { encoding: 'utf8' });
-        showToast({
-          type: 'info',
-          message: '⚠ Enable Input Monitoring for Electron\nSystem Settings → Privacy → Input Monitoring',
-        }, 10000);
-      }
+      if (msg.includes('not permitted') || msg.includes('denied')) promptInputMonitoring();
     });
 
     fnProc.stdout.on('data', (chunk) => {
@@ -797,7 +834,7 @@ app.whenReady().then(() => {
           if (isBubbleEnabled && !isRecording) startRecording();
         } else if (ev === 'up') {
           const held = Date.now() - pressStart;
-          if (!isRecording) return;
+          if (!isRecording) continue;
           if (held >= MIN_HOLD_MS) stopRecording();
           else cancelRecording();
         }
@@ -806,14 +843,8 @@ app.whenReady().then(() => {
 
     fnProc.on('error', (e) => console.error('[fn_watcher] error:', e.message));
     fnProc.on('exit', (code) => {
-      if (code !== 0) {
-        // Likely permission denied — open settings
-        spawnSync('open', ['x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent'], { encoding: 'utf8' });
-        showToast({
-          type: 'info',
-          message: '⚠ Enable Input Monitoring for Electron\nSystem Settings → Privacy → Input Monitoring',
-        }, 10000);
-      }
+      // Non-zero exit is most likely missing Input Monitoring permission
+      if (code !== 0 && code !== null) promptInputMonitoring();
     });
 
     app.on('will-quit', () => { try { fnProc.kill(); } catch { } });
@@ -913,83 +944,61 @@ ipcMain.on('open-dashboard', () => {
   createDashboardWindow();
 });
 
-async function retoneText(text, tone) {
+// NOTE: currentUser.token is the Clerk session JWT the web page handed over at
+// sign-in. Clerk session tokens expire after ~60s and the widget cannot refresh
+// them, so session logging only succeeds shortly after sign-in; afterwards the
+// backend returns 401 and logging is skipped (translation itself is unaffected).
+async function logNativeSession(nativeText, englishText) {
+  if (!currentUser || !currentUser.token) return null;
+  let sessionId = null;
   try {
-    const response = await fetch('http://127.0.0.1:8001/api/rewrite-tone', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, tone })
-    });
-    if (!response.ok) return text;
-    const data = await response.json();
-    return data.rewritten_text || text;
+    const session = await postJson('/api/native-to-english/session', {
+      user_id: currentUser.clerkId, // ignored by the server (derived from token)
+      original_language: 'auto', // Sarvam auto-detects
+      original_text: nativeText,
+      translated_text: englishText,
+    }, { auth: true });
+    sessionId = session.session_id;
+    await postJson('/api/native-to-english/transcription', {
+      session_id: sessionId,
+      original_transcript: englishText,
+      tone_applied: null,
+      rewritten_text: null,
+      custom_tone_desc: null,
+      confidence_score: null,
+    }, { auth: true });
   } catch (err) {
-    console.error('Retone error:', err);
-    return text;
+    console.error('Failed to log session:', err.message);
   }
+  return sessionId;
 }
 
-ipcMain.on('process-audio', async (event, audioBuffer) => {
-  const tmpPath = path.join(os.tmpdir(), `rec_${Date.now()}.webm`);
-  fs.writeFileSync(tmpPath, audioBuffer);
+// Backend calls on behalf of the (sandboxed) overlay renderer
+ipcMain.handle('backend-post-json', (_, pathname, body) => {
+  if (!RENDERER_JSON_PATHS.has(pathname)) throw new Error('path not allowed');
+  return postJson(pathname, body);
+});
+ipcMain.handle('backend-translate-audio', (_, bytes) => translateAudio(bytes));
+ipcMain.on('log-transcription', (_, payload) => {
+  if (!currentUser || !currentUser.token) return;
+  postJson('/api/native-to-english/transcription', payload, { auth: true })
+    .catch(err => console.error('Failed to log retone:', err.message));
+});
 
+ipcMain.on('process-audio', async (event, audioBytes) => {
   if (bubbleWin) bubbleWin.webContents.send('processing-state', true);
   showToast({ type: 'loading', message: 'Transcribing with Sarvam AI…' }, 0);
 
   try {
     // 1. Send to Sarvam Backend for Transcription/Translation
-    const formData = `file=@${tmpPath}`;
-    const r = spawnSync('curl', [
-      '-s', '-X', 'POST',
-      'http://127.0.0.1:8001/api/translate-audio',
-      '-F', formData
-    ], { encoding: 'utf8', timeout: 60000 });
-
-    console.log('[audio] curl status:', r.status, 'stdout:', r.stdout?.slice(0, 200), 'stderr:', r.stderr?.slice(0, 200));
-    if (r.error || r.status !== 0) throw new Error(r.stderr || 'Sarvam request failed');
-
-    const result = JSON.parse(r.stdout);
-    console.log('[audio] result:', JSON.stringify(result).slice(0, 200));
+    const result = await translateAudio(audioBytes);
     const nativeTranscript = result.native_transcript || '';
     const englishTranscript = result.transcript || '';
 
-    if (!englishTranscript) throw new Error('No transcript returned — response: ' + JSON.stringify(result));
-    
-    // ── Log to Database (Native to English) ──────────────────────────
-    let currentSessionId = null;
-    if (currentUser && currentUser.id) {
-      try {
-        const sessionRes = await fetch('http://127.0.0.1:8001/api/native-to-english/session', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            user_id: currentUser.id,
-            original_language: 'auto', // Sarvam auto-detects
-            original_text: nativeTranscript,
-            translated_text: englishTranscript
-          })
-        });
-        if (sessionRes.ok) {
-          const sessionData = await sessionRes.json();
-          currentSessionId = sessionData.session_id;
+    if (!englishTranscript) throw new Error('No transcript returned');
 
-          await fetch('http://127.0.0.1:8001/api/native-to-english/transcription', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              session_id: currentSessionId,
-              original_transcript: englishTranscript,
-              tone_applied: null,
-              rewritten_text: null,
-              custom_tone_desc: null,
-              confidence_score: null
-            })
-          });
-        }
-      } catch (err) {
-        console.error('Failed to log session:', err);
-      }
-    }
+    // ── Log to Database (Native to English) ──────────────────────────
+    const currentSessionId = await logNativeSession(nativeTranscript, englishTranscript);
 
     if (bubbleWin) bubbleWin.webContents.send('processing-done');
     if (toastWin) toastWin.hide();
@@ -999,7 +1008,7 @@ ipcMain.on('process-audio', async (event, audioBuffer) => {
     overlayWin.focus();
     isOverlayOpen = true;
 
-    overlayWin.webContents.send('show-result', { 
+    overlayWin.webContents.send('show-result', {
       transcript: englishTranscript,
       original: englishTranscript,
       native: nativeTranscript,
@@ -1007,11 +1016,9 @@ ipcMain.on('process-audio', async (event, audioBuffer) => {
     });
 
   } catch (err) {
-    console.error('Processing error:', err);
+    console.error('Processing error:', err.message);
     showToast({ type: 'error', message: `Transcription failed: ${err.message}` }, 5000);
     if (bubbleWin) bubbleWin.webContents.send('processing-done');
-  } finally {
-    if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
   }
 });
 
@@ -1077,7 +1084,7 @@ ipcMain.on('action-translate-screen', async (_, { lang, mode }) => {
 
     showToast({ type: 'loading', message: 'Translating screen text…' }, 0);
 
-    const data = visionTranslate(tmpImg, tgtLang);
+    const data = await visionTranslate(tmpImg, tgtLang);
     try { fs.unlinkSync(tmpImg); } catch { }
 
     const regions = data.regions || [];
@@ -1121,11 +1128,10 @@ ipcMain.on('region-selected', async (_, { x, y, w, h, lang }) => {
     const tmpImg = path.join(os.tmpdir(), `vt_full_${Date.now()}.png`);
     fs.writeFileSync(tmpImg, pngBuf);
 
-    const croppedPath = cropPng(tmpImg, x, y, w, h);
-    try { fs.unlinkSync(tmpImg); } catch { }
-
+    const croppedPath = await cropPng(tmpImg, x, y, w, h);
     const imgToSend = croppedPath || tmpImg;
-    const data = visionTranslate(imgToSend, lang);
+    const data = await visionTranslate(imgToSend, lang);
+    try { fs.unlinkSync(tmpImg); } catch { }
     if (croppedPath) try { fs.unlinkSync(croppedPath); } catch { }
 
     const regions = data.regions || [];
@@ -1167,7 +1173,7 @@ function openClickOverlay(lang) {
     frame: false, transparent: true, alwaysOnTop: true,
     skipTaskbar: true, resizable: false, movable: false, hasShadow: false,
     show: false,
-    webPreferences: { nodeIntegration: true, contextIsolation: false },
+    webPreferences: { ...SECURE_PREFS },
   });
   clickOverlayWin.loadFile('click-overlay.html');
   clickOverlayWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
@@ -1200,10 +1206,10 @@ ipcMain.on('action-click-mode', (_, { lang, mode }) => {
 // ── Accessibility text reader (macOS AX API — works on ANY app, no screenshot) ──
 const AX_HELPER = path.join(__dirname, 'ax_text_at_cursor');
 
-function getTextViaAX(x, y) {
+async function getTextViaAX(x, y) {
   try {
-    const r = spawnSync(AX_HELPER, [String(x), String(y)], { encoding: 'utf8', timeout: 3000 });
-    if (r.error || r.status !== 0) return null;
+    const r = await runFile(AX_HELPER, [String(x), String(y)], { timeout: 3000 });
+    if (r.error) return null;
     const parsed = JSON.parse(r.stdout.trim());
     return parsed.text && parsed.text.trim() ? parsed.text.trim() : null;
   } catch { return null; }
@@ -1211,30 +1217,22 @@ function getTextViaAX(x, y) {
 
 // Translate plain text via backend
 function translateText(text, lang) {
-  const body = JSON.stringify({
+  return postJson('/api/translate-text', {
     text,
     source_language: 'en-IN',
     target_language: lang,
   });
-  const r = spawnSync('curl', [
-    '-s', '-X', 'POST',
-    'http://127.0.0.1:8001/api/translate-text',
-    '-H', 'Content-Type: application/json',
-    '-d', body,
-  ], { encoding: 'utf8', timeout: 30000 });
-  if (r.error || r.status !== 0) throw new Error(r.stderr || 'curl failed');
-  return JSON.parse(r.stdout);
 }
 
 // Called from click-overlay.html when user clicks on screen
 ipcMain.on('click-translate', async (_, { x, y, lang }) => {
   try {
     // ── FAST PATH: try Accessibility API first (instant, no screenshot needed) ──
-    const axText = getTextViaAX(x, y);
+    const axText = await getTextViaAX(x, y);
 
     if (axText) {
       // Got text directly from the app — translate it immediately
-      const data = translateText(axText, lang);
+      const data = await translateText(axText, lang);
       const translated = data.translated_text || axText;
 
       if (clickOverlayWin) {
@@ -1261,11 +1259,10 @@ ipcMain.on('click-translate', async (_, { x, y, lang }) => {
     const tmpImg = path.join(os.tmpdir(), `vt_click_${Date.now()}.png`);
     fs.writeFileSync(tmpImg, pngBuf);
 
-    const croppedPath = cropPng(tmpImg, rx, ry, REGION_W, REGION_H);
-    try { fs.unlinkSync(tmpImg); } catch { }
-
+    const croppedPath = await cropPng(tmpImg, rx, ry, REGION_W, REGION_H);
     const imgToSend = croppedPath || tmpImg;
-    const data = visionTranslate(imgToSend, lang);
+    const data = await visionTranslate(imgToSend, lang);
+    try { fs.unlinkSync(tmpImg); } catch { }
     if (croppedPath) try { fs.unlinkSync(croppedPath); } catch { }
 
     if (clickOverlayWin) {
@@ -1311,51 +1308,26 @@ ipcMain.on('stop-screen-mode', () => {
 });
 
 // ── Detect frontmost app + active browser URL ─────────────────────────────────
-ipcMain.on('get-active-url', (event) => {
-  // 1. Try to get URL from frontmost browser via AppleScript
-  const browsers = [
-    { name: 'Google Chrome', script: `tell application "Google Chrome" to get URL of active tab of front window` },
-    { name: 'Safari', script: `tell application "Safari" to get URL of current tab of front window` },
-    { name: 'Microsoft Edge', script: `tell application "Microsoft Edge" to get URL of active tab of front window` },
-    { name: 'Brave Browser', script: `tell application "Brave Browser" to get URL of active tab of front window` },
-    { name: 'Firefox', script: `tell application "Firefox" to get URL of active tab of front window` },
-  ];
-
-  let url = null;
-  let appName = null;
-
-  // Get frontmost app name first
-  const frontAppResult = spawnSync('osascript', ['-e', 'tell application "System Events" to get name of first process whose frontmost is true'], { encoding: 'utf8', timeout: 3000 });
-  appName = (frontAppResult.stdout || '').trim();
-
-  // Try browser URL extraction
-  for (const b of browsers) {
-    if (appName && !appName.toLowerCase().includes(b.name.split(' ')[0].toLowerCase())) continue;
-    const r = spawnSync('osascript', ['-e', b.script], { encoding: 'utf8', timeout: 3000 });
-    if (!r.error && r.status === 0 && r.stdout?.trim()) {
-      url = r.stdout.trim();
-      break;
-    }
-  }
-
-  event.reply('active-url', url);
+ipcMain.on('get-active-url', async (event) => {
+  const { app: appName, url } = await getFrontmostContext();
+  event.reply('active-url', url || null);
   event.reply('active-app', appName);
 });
 
 // ── Smart send — detect target and route ──────────────────────────────────────
-ipcMain.on('smart-send', (_, { text, subject, body }) => {
+ipcMain.on('smart-send', async (_, { text, subject, body }) => {
   const scriptPath = path.join(__dirname, 'fill_compose.sh');
 
+  await activeContextPromise; // context captured at startRecording()
   const url = lastActiveUrl;
   const appName = lastActiveApp;
-  console.log('[smart-send] stored url:', url, 'app:', appName);
 
   let target = 'fallback';
-  if (url.includes('mail.google.com')) target = 'gmail';
-  else if (url.includes('slack.com')) target = 'slack';
-  else if (url.includes('web.whatsapp.com')) target = 'whatsapp';
-  else if (url.includes('linkedin.com')) target = 'linkedin';
-  else if (url.includes('outlook.live.com') || url.includes('outlook.office')) target = 'outlook';
+  if (hostMatches(url, 'mail.google.com')) target = 'gmail';
+  else if (hostMatches(url, 'slack.com')) target = 'slack';
+  else if (hostMatches(url, 'web.whatsapp.com')) target = 'whatsapp';
+  else if (hostMatches(url, 'linkedin.com')) target = 'linkedin';
+  else if (hostMatches(url, 'outlook.live.com') || hostMatches(url, 'outlook.office.com') || hostMatches(url, 'outlook.office365.com')) target = 'outlook';
   else if (appName.includes('slack')) target = 'slack';
   else if (appName.includes('whatsapp')) target = 'whatsapp';
   else if (appName.includes('mail') && !appName.includes('gmail')) target = 'applemail';
@@ -1368,10 +1340,9 @@ ipcMain.on('smart-send', (_, { text, subject, body }) => {
     // Try direct accessibility insertion into the focused text field
     const axPath = path.join(__dirname, 'ax_insert_text');
     app.hide();
-    setTimeout(() => {
-      const r = spawnSync(axPath, [text], { encoding: 'utf8', timeout: 5000 });
-      console.log('[smart-send] ax_insert_text:', r.stdout, r.stderr);
-      if (r.status !== 0 || r.stderr?.includes('Error')) {
+    setTimeout(async () => {
+      const r = await runFile(axPath, [text], { timeout: 5000 });
+      if (r.error || r.stderr.includes('Error')) {
         // Fallback to clipboard if accessibility insert fails
         const { clipboard } = require('electron');
         clipboard.writeText(text);
@@ -1394,11 +1365,10 @@ ipcMain.on('smart-send', (_, { text, subject, body }) => {
   // Give macOS time to fully switch focus to the target app
   const delay = needsAppHide ? 600 : 400;
 
-  setTimeout(() => {
-    const result = spawnSync('bash', [scriptPath, target, subject || '', body || text], {
-      encoding: 'utf8', timeout: 15000,
-    });
-    console.log('[smart-send] fill_compose result:', result.stdout, result.stderr);
+  setTimeout(async () => {
+    const result = await runFile('bash', [scriptPath, target, subject || '', body || text], { timeout: 15000 });
+    // Don't log error.message — it contains the command line (message text)
+    if (result.error) console.error('[smart-send] fill_compose failed, exit code:', result.error.code);
 
     // Bring Electron back (bubble should reappear)
     if (needsAppHide) {

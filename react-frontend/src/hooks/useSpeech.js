@@ -2,6 +2,12 @@ import { useCallback, useRef } from 'react';
 import { useApp } from '../context/AppContext';
 import * as api from '../services/api';
 
+function releaseAudio(audio) {
+  if (!audio) return;
+  audio.pause();
+  if (audio.src.startsWith('blob:')) URL.revokeObjectURL(audio.src);
+}
+
 export function useSpeech() {
   const { state, setField } = useApp();
   const audioRef = useRef(null);
@@ -12,7 +18,7 @@ export function useSpeech() {
 
     // Toggle off if already playing
     if (isPlaying) {
-      audioRef.current?.pause();
+      releaseAudio(audioRef.current);
       audioRef.current = null;
       setField('isSpeaking', false);
       return;
@@ -27,16 +33,17 @@ export function useSpeech() {
       const url   = URL.createObjectURL(blob);
       const audio = new Audio(url);
       audioRef.current = audio;
-      audio.onended = () => { setField('isSpeaking', false); URL.revokeObjectURL(url); };
-      audio.onerror = () => { setField('isSpeaking', false); URL.revokeObjectURL(url); };
-      audio.play();
+      const finish = () => { setField('isSpeaking', false); URL.revokeObjectURL(url); };
+      audio.onended = finish;
+      audio.onerror = finish;
+      audio.play().catch(finish);
     } catch {
       setField('isSpeaking', false);
     }
   }, [isPlaying, state.selectedLanguage, state.selectedSarvamVoice, setField]);
 
   const stop = useCallback(() => {
-    audioRef.current?.pause();
+    releaseAudio(audioRef.current);
     audioRef.current = null;
     setField('isSpeaking', false);
   }, [setField]);

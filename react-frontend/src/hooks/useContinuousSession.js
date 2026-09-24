@@ -3,6 +3,8 @@ import * as api from '../services/api';
 
 const CHUNK_MS = 5000;
 
+const AMPLITUDE_NOTIFY_MS = 100; // re-render listeners at most ~10x/s for the meter
+
 const _session = {
   state: 'idle',   // idle | listening | paused | ended
   lines: [],
@@ -11,25 +13,33 @@ const _session = {
   audioCtx: null,
   mediaRecorder: null,
   chunkTimer: null,
+  restartTimer: null,
   animFrame: null,
-  chunks: [],
   amplitude: 0,
+  starting: false,
   listeners: new Set(),
 };
+
+let lastAmplitudeNotify = 0;
 
 function notify() {
   _session.listeners.forEach(fn => fn({ ..._session }));
 }
 
-function stopMicHard() {
-  if (_session.mediaRecorder?.state === 'recording') {
-    _session.mediaRecorder.onstop = null;
-    _session.mediaRecorder.stop();
+// flush=true lets the recorder's onstop send the final partial chunk for transcription.
+function stopMic({ flush }) {
+  const mr = _session.mediaRecorder;
+  if (mr?.state === 'recording') {
+    if (!flush) mr.onstop = null;
+    mr.stop();
   }
+  _session.mediaRecorder = null;
   _session.stream?.getTracks().forEach(t => t.stop());
   _session.stream = null;
   clearInterval(_session.chunkTimer);
   _session.chunkTimer = null;
+  clearTimeout(_session.restartTimer);
+  _session.restartTimer = null;
   cancelAnimationFrame(_session.animFrame);
   _session.animFrame = null;
   _session.audioCtx?.close().catch(() => {});
@@ -71,16 +81,16 @@ async function processChunk(blob, incrementUsage) {
 }
 
 function startChunkRecorder(stream, incrementUsage) {
-  _session.chunks = [];
+  const chunks = [];
   const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
   const mr = new MediaRecorder(stream, { mimeType: mime });
   _session.mediaRecorder = mr;
-  mr.ondataavailable = e => { if (e.data.size > 0) _session.chunks.push(e.data); };
-  mr.onstop = () => processChunk(new Blob(_session.chunks, { type: 'audio/webm' }), incrementUsage);
+  mr.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+  mr.onstop = () => processChunk(new Blob(chunks, { type: 'audio/webm' }), incrementUsage);
   mr.start();
 }
 
-async function initMic(onAmplitude) {
+async function initMic() {
   const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   _session.stream = stream;
   const ctx = new AudioContext();
@@ -93,7 +103,11 @@ async function initMic(onAmplitude) {
   const tick = () => {
     analyser.getByteFrequencyData(data);
     _session.amplitude = data.reduce((a, b) => a + b, 0) / data.length;
-    onAmplitude?.(_session.amplitude);
+    const now = performance.now();
+    if (now - lastAmplitudeNotify >= AMPLITUDE_NOTIFY_MS) {
+      lastAmplitudeNotify = now;
+      notify();
+    }
     _session.animFrame = requestAnimationFrame(tick);
   };
   _session.animFrame = requestAnimationFrame(tick);
@@ -105,7 +119,7 @@ function startChunking(stream, incrementUsage) {
   _session.chunkTimer = setInterval(() => {
     if (_session.mediaRecorder?.state === 'recording') {
       _session.mediaRecorder.stop();
-      setTimeout(() => {
+      _session.restartTimer = setTimeout(() => {
         if (_session.stream) startChunkRecorder(_session.stream, incrementUsage);
       }, 150);
     }
@@ -113,47 +127,41 @@ function startChunking(stream, incrementUsage) {
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
-export async function sessionStart(incrementUsage) {
-  if (_session.state === 'listening') return;
-  const stream = await initMic((amp) => { _session.amplitude = amp; notify(); });
-  startChunking(stream, incrementUsage);
-  _session.state = 'listening';
+async function startListening(incrementUsage) {
+  if (_session.state === 'listening' || _session.starting) return;
+  _session.starting = true;
+  try {
+    const stream = await initMic();
+    startChunking(stream, incrementUsage);
+    _session.state = 'listening';
+  } catch (e) {
+    stopMic({ flush: false });
+    throw e;
+  } finally {
+    _session.starting = false;
+  }
   notify();
 }
 
-export async function sessionResume(incrementUsage) {
-  if (_session.state === 'listening') return;
-  const stream = await initMic((amp) => { _session.amplitude = amp; notify(); });
-  startChunking(stream, incrementUsage);
-  _session.state = 'listening';
-  notify();
-}
+export const sessionStart = startListening;
+export const sessionResume = startListening;
 
 export function sessionPause() {
-  if (_session.mediaRecorder?.state === 'recording') {
-    _session.mediaRecorder.onstop = null;
-    _session.mediaRecorder.stop();
-  }
-  clearInterval(_session.chunkTimer);
-  cancelAnimationFrame(_session.animFrame);
-  _session.stream?.getTracks().forEach(t => t.stop());
-  _session.stream = null;
-  _session.amplitude = 0;
+  stopMic({ flush: true });
   _session.state = 'paused';
   notify();
 }
 
 export function sessionEnd() {
-  stopMicHard();
+  stopMic({ flush: true });
   _session.state = 'ended';
   notify();
 }
 
 export function sessionClear() {
-  stopMicHard();
+  stopMic({ flush: false });
   _session.state = 'idle';
   _session.lines = [];
-  _session.amplitude = 0;
   notify();
 }
 

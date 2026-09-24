@@ -3,6 +3,7 @@ import { useApp } from '../context/AppContext';
 import { RefreshCw, Database, Trash2, Zap, BarChart2, Moon, Sun, Globe, X, ShieldCheck, Volume2, Play } from 'lucide-react';
 import * as api from '../services/api';
 import { getLabels } from '../services/uiLabels';
+import { LANG_LABELS } from '../constants/languages';
 
 
 const UI_LANGUAGES = [
@@ -18,12 +19,6 @@ const UI_LANGUAGES = [
   { code: 'pa-IN', name: 'Punjabi'   },
   { code: 'or-IN', name: 'Odia'      },
 ];
-
-const LANG_NAMES = {
-  'hi-IN': 'Hindi', 'bn-IN': 'Bengali', 'ta-IN': 'Tamil', 'te-IN': 'Telugu',
-  'ml-IN': 'Malayalam', 'mr-IN': 'Marathi', 'gu-IN': 'Gujarati',
-  'kn-IN': 'Kannada', 'pa-IN': 'Punjabi', 'or-IN': 'Odia',
-};
 
 function Toggle({ on, onToggle, disabled }) {
   return (
@@ -89,9 +84,10 @@ export default function Settings() {
       const url  = URL.createObjectURL(blob);
       const audio = new Audio(url);
       previewAudioRef[0] = audio;
-      audio.onended = () => { setPreviewingVoice(null); URL.revokeObjectURL(url); };
-      audio.onerror = () => { setPreviewingVoice(null); };
-      audio.play();
+      const finish = () => { setPreviewingVoice(null); URL.revokeObjectURL(url); };
+      audio.onended = finish;
+      audio.onerror = finish;
+      audio.play().catch(finish);
     } catch { setPreviewingVoice(null); }
   };
 
@@ -146,7 +142,7 @@ export default function Settings() {
                     <div key={lang} className="flex items-center justify-between px-3 py-2 bg-gray-50 rounded-xl border border-gray-100">
                       <div className="flex items-center gap-2">
                         <Zap className="w-3 h-3 text-amber-400" />
-                        <span className="text-[13px] font-medium text-gray-700">{LANG_NAMES[lang] || lang}</span>
+                        <span className="text-[13px] font-medium text-gray-700">{LANG_LABELS[lang] || lang}</span>
                       </div>
                       <div className="flex items-center gap-3 text-[12px] text-gray-400">
                         <span>{d.entries} entries</span>

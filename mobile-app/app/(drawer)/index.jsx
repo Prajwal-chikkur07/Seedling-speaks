@@ -1,12 +1,12 @@
-import { View, Text, ScrollView, TouchableOpacity, Image, StyleSheet, Dimensions, StatusBar } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, Image, StyleSheet, StatusBar } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { useDrawer } from '../../src/context/DrawerContext';
 import { useUser } from '@clerk/clerk-expo';
 import { COLORS } from '../../src/constants/colors';
+import { LANGUAGE_LIST, TONES } from '../../src/constants/languages';
+import { APP_VERSION } from '../../src/constants/app';
 
-const { width } = Dimensions.get('window');
-const CARD_W = (width - 52) / 2;
 
 const FEATURES = [
   {
@@ -17,7 +17,7 @@ const FEATURES = [
   },
   {
     id: 'cont', title: 'Continuous',
-    desc: 'Hands-free with silence detection',
+    desc: 'Hands-free, transcribed in 5-second chunks',
     icon: '👂', bg: '#EEF2FB', accent: '#3D4F8A',
     route: '/(drawer)/continuous',
   },
@@ -42,9 +42,9 @@ const FEATURES = [
 ];
 
 const QUICK_STATS = [
-  { val: '10+', label: 'Languages' },
-  { val: '5', label: 'Features' },
-  { val: '3', label: 'AI Tones' },
+  { val: String(LANGUAGE_LIST.length), label: 'Languages' },
+  { val: String(FEATURES.length), label: 'Features' },
+  { val: String(TONES.filter((t) => t !== 'User Override').length), label: 'AI Tones' },
 ];
 
 function getGreeting() {
@@ -175,7 +175,7 @@ export default function HomePage() {
           ))}
         </View>
 
-        <Text style={s.footer}>v2.5 · SeedlingSpeaks by Seedlinglabs</Text>
+        <Text style={s.footer}>v{APP_VERSION} · SeedlingSpeaks by Seedlinglabs</Text>
       </ScrollView>
     </View>
   );

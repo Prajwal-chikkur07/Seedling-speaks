@@ -5,12 +5,7 @@ import {
 } from 'lucide-react';
 import * as api from '../services/api';
 import { getLabels } from '../services/uiLabels';
-
-const LANG_LABELS = {
-  'hi-IN': 'Hindi', 'bn-IN': 'Bengali', 'ta-IN': 'Tamil', 'te-IN': 'Telugu',
-  'ml-IN': 'Malayalam', 'mr-IN': 'Marathi', 'gu-IN': 'Gujarati',
-  'kn-IN': 'Kannada', 'pa-IN': 'Punjabi', 'or-IN': 'Odia',
-};
+import { LANG_LABELS } from '../constants/languages';
 
 export default function VisionTranslate() {
   const { state } = useApp();
@@ -33,6 +28,8 @@ export default function VisionTranslate() {
   const inputRef = useRef(null);
   const imgRef = useRef(null);
   const containerRef = useRef(null);
+
+  useEffect(() => () => { if (imageUrl) URL.revokeObjectURL(imageUrl); }, [imageUrl]);
 
   // Track rendered image size for overlay positioning
   useEffect(() => {
@@ -102,11 +99,12 @@ export default function VisionTranslate() {
     const text = regions.map((r, i) =>
       `[${i + 1}] Original: ${r.original}\n    ${LANG_LABELS[targetLang]}: ${r.translated}`
     ).join('\n\n');
-    const blob = new Blob([text], { type: 'text/plain' });
+    const url = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
+    a.href = url;
     a.download = `translated_${imageFile?.name?.replace(/\.[^.]+$/, '') || 'image'}.txt`;
     a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   return (

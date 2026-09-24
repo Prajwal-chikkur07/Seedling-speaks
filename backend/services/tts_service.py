@@ -1,11 +1,29 @@
 import os
+import io
+import base64
 import logging
 import subprocess
-from gtts import gTTS
 import tempfile
-from typing import Optional
+import wave
+
+import requests
+from gtts import gTTS
+
+from services.config import (
+    FFMPEG_TIMEOUT,
+    SARVAM_BASE_URL,
+    SARVAM_TTS_FALLBACK_MODEL,
+    SARVAM_TTS_MODEL,
+)
 
 logger = logging.getLogger(__name__)
+
+# Speakers accepted by Sarvam TTS (bulbul).
+VALID_SPEAKERS = {"abhilash", "karun", "hitesh", "aditya", "rahul", "rohan", "anushka", "manisha", "vidya", "arya", "priya", "neha", "ritu", "pooja", "simran", "kavya"}
+DEFAULT_SPEAKER = "anushka"
+# Voices handed out per detected speaker in diarization, by gender.
+MALE_VOICES = ["abhilash", "karun", "hitesh", "aditya"]
+FEMALE_VOICES = ["anushka", "vidya", "manisha", "arya"]
 
 # Emotion → ffmpeg audio filter params
 # atempo: speech rate (0.5–2.0), pitch via asetrate+atempo trick
@@ -61,7 +79,7 @@ def _apply_emotion_filter(input_path: str, emotion: str, gender: str = 'female')
     ]
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=FFMPEG_TIMEOUT)
         if result.returncode == 0 and os.path.exists(output_path):
             logger.info(f"[tts] Emotion filter applied ({emotion}): tempo={tempo}, pitch={semitones:+d}st")
             return output_path
@@ -81,7 +99,7 @@ def text_to_speech_gtts(text: str, language: str = "en", emotion: str = "neutral
     try:
         logger.info(f"[tts] Generating speech: lang={language}, emotion={emotion}, gender={gender}, text='{text[:50]}'")
 
-        tts = gTTS(text=text, lang=language, slow=False)
+        tts = gTTS(text=text, lang=language, slow=False, timeout=30)
         temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.mp3')
         temp_path = temp_file.name
         temp_file.close()
@@ -104,20 +122,14 @@ def text_to_speech_gtts(text: str, language: str = "en", emotion: str = "neutral
         raise Exception(f"Failed to generate speech: {str(e)}")
 
 
-def text_to_speech_sarvam(text: str, language: str = "en-IN", speaker_gender: str = "meera") -> str:
+def text_to_speech_sarvam(text: str, language: str = "en-IN", speaker_gender: str = DEFAULT_SPEAKER) -> str:
     """Sarvam AI TTS — high quality Indian language voices."""
-    import requests
-    from pathlib import Path
-    from dotenv import load_dotenv
-    load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env")
     SARVAM_API_KEY = os.getenv("SARVAM_API_KEY")
     if not SARVAM_API_KEY:
         raise Exception("SARVAM_API_KEY is not set")
 
-    VALID_SPEAKERS = {"abhilash", "karun", "hitesh", "aditya", "rahul", "rohan", "anushka", "manisha", "vidya", "arya", "priya", "neha", "ritu", "pooja", "simran", "kavya"}
-    speaker = speaker_gender if speaker_gender.lower() in VALID_SPEAKERS else "anushka"
-
-    import base64, wave, io
+    speaker = speaker_gender.lower() if speaker_gender.lower() in VALID_SPEAKERS else DEFAULT_SPEAKER
+    url = f"{SARVAM_BASE_URL}/text-to-speech"
 
     # Split text into chunks ≤500 chars (Sarvam limit)
     chunks = [text[i:i+500] for i in range(0, len(text), 500)]
@@ -138,10 +150,10 @@ def text_to_speech_sarvam(text: str, language: str = "en-IN", speaker_gender: st
             "loudness": 1.5,
             "speech_sample_rate": 22050,
             "enable_preprocessing": True,
-            "model": "bulbul:v2",
+            "model": SARVAM_TTS_MODEL,
         }
         logger.info(f"[sarvam-tts] lang={language}, speaker={speaker}, chunk={len(chunk)}chars")
-        resp = requests.post("https://api.sarvam.ai/text-to-speech", json=payload, headers=headers, timeout=30)
+        resp = requests.post(url, json=payload, headers=headers, timeout=30)
 
         if resp.status_code != 200:
             v3_payload = {
@@ -151,9 +163,9 @@ def text_to_speech_sarvam(text: str, language: str = "en-IN", speaker_gender: st
                 "pace": 1.0,
                 "speech_sample_rate": 22050,
                 "enable_preprocessing": True,
-                "model": "bulbul:v3",
+                "model": SARVAM_TTS_FALLBACK_MODEL,
             }
-            resp = requests.post("https://api.sarvam.ai/text-to-speech", json=v3_payload, headers=headers, timeout=30)
+            resp = requests.post(url, json=v3_payload, headers=headers, timeout=30)
 
         if resp.status_code == 200:
             data = resp.json()

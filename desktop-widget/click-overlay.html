@@ -162,7 +162,6 @@
   <div id="container"></div>
 
   <script>
-    const { ipcRenderer } = require('electron');
     const container = document.getElementById('container');
     const crossH = document.getElementById('crosshair-h');
     const crossV = document.getElementById('crosshair-v');
@@ -170,7 +169,7 @@
     let lang = 'hi-IN';
     let isTranslating = false;
 
-    ipcRenderer.on('init', (_, data) => { lang = data.lang; });
+    window.widget.on('init', (data) => { lang = data.lang; });
 
     // Crosshair follows mouse
     document.addEventListener('mousemove', (e) => {
@@ -203,7 +202,7 @@
       container.appendChild(spinner);
 
       // Send to main process with screen coordinates
-      ipcRenderer.send('click-translate', {
+      window.widget.send('click-translate', {
         x: e.screenX,
         y: e.screenY,
         lang,
@@ -211,7 +210,7 @@
     });
 
     // Show translation result
-    ipcRenderer.on('show-result', (_, { regions, offsetX, offsetY, regionW, regionH, clickX, clickY, message }) => {
+    window.widget.on('show-result', ({ regions, offsetX, offsetY, regionW, regionH, clickX, clickY, message }) => {
       const spinner = document.getElementById('active-spinner');
       if (spinner) spinner.remove();
       isTranslating = false;
@@ -257,7 +256,7 @@
     }
 
     document.getElementById('stopBtn').addEventListener('click', () => {
-      ipcRenderer.send('stop-click-mode');
+      window.widget.send('stop-click-mode');
     });
 
     function esc(str) {

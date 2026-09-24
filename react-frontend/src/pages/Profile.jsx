@@ -8,12 +8,8 @@ import {
 import { getLabels } from '../services/uiLabels';
 import { loadUserProfile, mergeAuthProfile, saveUserProfile, getProfileInitials, normalizeProfile } from '../services/userProfile';
 import { syncWidgetConfig } from '../services/widgetService';
+import { LANG_LABELS } from '../constants/languages';
 
-const LANG_LABELS = {
-  'hi-IN': 'Hindi', 'bn-IN': 'Bengali', 'ta-IN': 'Tamil', 'te-IN': 'Telugu',
-  'ml-IN': 'Malayalam', 'mr-IN': 'Marathi', 'gu-IN': 'Gujarati',
-  'kn-IN': 'Kannada', 'pa-IN': 'Punjabi', 'or-IN': 'Odia',
-};
 const CHANNEL_SECTIONS = [
   {
     id: 'email', label: 'Email', color: 'text-blue-600', bg: 'bg-blue-50', border: 'border-blue-100',

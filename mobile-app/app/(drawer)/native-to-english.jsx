@@ -1,10 +1,10 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import {
   View, Text, TouchableOpacity, TextInput, ScrollView,
-  StyleSheet, ActivityIndicator, Alert, Animated, Dimensions,
+  StyleSheet, ActivityIndicator, Alert, Animated,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Audio } from 'expo-av';
+import { useFocusEffect } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import { COLORS, CONFIDENCE_COLOR } from '../../src/constants/colors';
@@ -12,8 +12,8 @@ import { TARGET_LANGUAGES, TONES } from '../../src/constants/languages';
 import { useApp } from '../../src/context/AppContext';
 import { useDrawer } from '../../src/context/DrawerContext';
 import api from '../../src/services/api';
+import { ensureMicPermission, startRecordingSession, stopRecordingSafely, resetAudioMode } from '../../src/services/recording';
 
-const { width } = Dimensions.get('window');
 const MODES = ['Transcript', 'Retoned', 'Translated'];
 
 export default function NativeToEnglishScreen() {
@@ -33,16 +33,30 @@ export default function NativeToEnglishScreen() {
   const [showLangs,    setShowLangs]    = useState(false);
 
   const timerRef  = useRef(null);
+  const recordingRef = useRef(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const pulseLoop = useRef(null);
 
   const {
-    englishText, nativeTranscript, rewrittenText,
+    englishText, rewrittenText,
     nativeTranslation, confidenceScore,
     selectedLanguage, selectedLanguageName, selectedTone,
   } = state;
 
-  useEffect(() => () => { if (timerRef.current) clearInterval(timerRef.current); }, []);
+  // Drawer screens stay mounted, so stop any in-progress recording when the
+  // screen loses focus (and on unmount) instead of leaving the mic open.
+  useFocusEffect(useCallback(() => () => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    const rec = recordingRef.current;
+    recordingRef.current = null;
+    if (rec) {
+      stopRecordingSafely(rec).then(resetAudioMode);
+      setRecording(null);
+      setIsRecording(false);
+      pulseLoop.current?.stop();
+      pulseAnim.setValue(1);
+    }
+  }, [pulseAnim]));
 
   function startPulse() {
     pulseLoop.current = Animated.loop(
@@ -61,10 +75,9 @@ export default function NativeToEnglishScreen() {
 
   async function startRecording() {
     try {
-      const perm = await Audio.requestPermissionsAsync();
-      if (!perm.granted) { Alert.alert('Permission needed', 'Microphone access is required.'); return; }
-      await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
-      const { recording: rec } = await Audio.Recording.createAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
+      if (!(await ensureMicPermission())) return;
+      const rec = await startRecordingSession();
+      recordingRef.current = rec;
       setRecording(rec);
       setIsRecording(true);
       setTimer(0);
@@ -78,15 +91,17 @@ export default function NativeToEnglishScreen() {
 
   async function stopRecording() {
     if (!recording) return;
+    recordingRef.current = null;
     clearInterval(timerRef.current);
     setIsRecording(false);
     stopPulse();
     setTranscribing(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     try {
-      await recording.stopAndUnloadAsync();
-      const uri = recording.getURI();
+      const uri = await stopRecordingSafely(recording);
       setRecording(null);
+      await resetAudioMode();
+      if (!uri) throw new Error('No audio was recorded.');
       const result = await api.translateAudioFromBlob(uri, selectedLanguage);
       incrementUsage('sarvamCalls');
       setFields({
@@ -149,7 +164,12 @@ export default function NativeToEnglishScreen() {
   async function handleCopy() {
     const text = activeText;
     if (!text) return;
-    await Clipboard.setStringAsync(text);
+    try {
+      await Clipboard.setStringAsync(text);
+    } catch {
+      Alert.alert('Copy failed', 'Could not copy to clipboard.');
+      return;
+    }
     setCopied(true);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setTimeout(() => setCopied(false), 2000);

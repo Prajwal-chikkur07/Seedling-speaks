@@ -1,10 +1,6 @@
 """Tests for health check and cache management endpoints."""
 from fastapi.testclient import TestClient
 from unittest.mock import patch
-import sys, os
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
 from main import app
 
 client = TestClient(app)

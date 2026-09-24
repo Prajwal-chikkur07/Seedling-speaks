@@ -3,56 +3,81 @@ audio_router.py — Audio processing endpoints.
 POST /api/translate-audio      → Transcribe audio to English + native
 POST /api/diarize-audio        → Speaker diarization
 POST /api/clone-voice          → Clone a voice from audio sample (LMNT)
+POST /api/diarize-and-clone    → Diarization + per-speaker LMNT voice clones
 POST /api/synthesize-conversation → TTS per speaker segment
 POST /api/text-to-speech       → Text-to-speech conversion
 """
 import os
+import asyncio
 import logging
 import base64
+import uuid
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from starlette.background import BackgroundTask
 import aiofiles
 
+from services.audio_diarization import extract_speaker_audio_samples
+from services.config import AUDIO_MIME_TYPES, MAX_UPLOAD_SIZE, TEMP_AUDIO_DIR, UPLOAD_CHUNK_SIZE
+from services.diarization_service import diarize
+from services import lmnt_service
 from services.sarvam_client import translate_speech_to_text
 from services.tts_service import (
+    DEFAULT_SPEAKER,
     text_to_speech_gtts,
     text_to_speech_sarvam,
     get_gtts_language_code,
 )
-from services.diarization_service import assign_speaker_voices
 
 router = APIRouter(prefix="/api", tags=["audio"])
 logger = logging.getLogger(__name__)
 
-MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
-CHUNK_SIZE = 1024 * 1024  # 1MB
+MAX_SYNTH_SEGMENTS = 100
 
 
 class TTSRequest(BaseModel):
     text: str
     language: str = "en"
     use_sarvam: bool = False
-    speaker: str = "meera"
+    speaker: str = DEFAULT_SPEAKER
 
 
 def _resolve_content_type(content_type: str, filename: str) -> str:
     """Map generic content types to specific audio MIME types based on extension."""
     if content_type != "application/octet-stream":
         return content_type
-    ext_map = {
-        ".webm": "audio/webm",
-        ".wav": "audio/wav",
-        ".mp3": "audio/mpeg",
-        ".m4a": "audio/x-m4a",
-        ".ogg": "audio/ogg",
-        ".flac": "audio/flac",
-    }
-    for ext, mime in ext_map.items():
-        if filename.endswith(ext):
-            return mime
-    return "audio/webm"
+    ext = os.path.splitext(filename)[1].lower()
+    return AUDIO_MIME_TYPES.get(ext, "audio/webm")
+
+
+def _remove(path: str | None):
+    if path and os.path.exists(path):
+        os.remove(path)
+
+
+async def _save_upload(file: UploadFile, prefix: str) -> tuple[str, int]:
+    """Stream an upload into temp_audio, enforcing MAX_UPLOAD_SIZE. Returns (path, size)."""
+    TEMP_AUDIO_DIR.mkdir(exist_ok=True)
+    # Never build paths from the client filename: "../" in it would escape temp_audio.
+    ext = os.path.splitext(file.filename or "")[1] or ".webm"
+    path = str(TEMP_AUDIO_DIR / f"{prefix}{uuid.uuid4().hex[:8]}{ext}")
+    size = 0
+    try:
+        async with aiofiles.open(path, "wb") as out:
+            while chunk := await file.read(UPLOAD_CHUNK_SIZE):
+                size += len(chunk)
+                if size > MAX_UPLOAD_SIZE:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File too large. Maximum size is {MAX_UPLOAD_SIZE // (1024 * 1024)}MB",
+                    )
+                await out.write(chunk)
+    except BaseException:
+        _remove(path)
+        raise
+    return path, size
 
 
 @router.post("/translate-audio")
@@ -70,28 +95,11 @@ async def handle_audio_translation(file: UploadFile = File(...)):
         f"Received audio: filename={original_filename}, content_type={content_type}"
     )
 
-    os.makedirs("temp_audio", exist_ok=True)
-    # Use unique filename to prevent race conditions with concurrent requests
-    import uuid
-    unique_id = uuid.uuid4().hex[:8]
-    ext = os.path.splitext(original_filename)[1] or ".webm"
-    temp_path = f"temp_audio/{unique_id}{ext}"
-    file_size = 0
-
+    temp_path, file_size = await _save_upload(file, "")
     try:
-        async with aiofiles.open(temp_path, "wb") as buffer:
-            while chunk := await file.read(CHUNK_SIZE):
-                file_size += len(chunk)
-                if file_size > MAX_FILE_SIZE:
-                    raise HTTPException(
-                        status_code=413,
-                        detail=f"File too large. Maximum size is {MAX_FILE_SIZE / (1024*1024)}MB",
-                    )
-                await buffer.write(chunk)
-
         logger.info(f"File saved: {temp_path}, size: {file_size / 1024:.2f}KB")
 
-        result = translate_speech_to_text(temp_path, content_type=content_type)
+        result = await asyncio.to_thread(translate_speech_to_text, temp_path, content_type)
         english_transcript = result.get("transcript", "")
         native_transcript = result.get("native_transcript", "")
         confidence = result.get("confidence", None)
@@ -116,8 +124,33 @@ async def handle_audio_translation(file: UploadFile = File(...)):
         logger.error(f"translate-audio error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+        _remove(temp_path)
+
+
+def _diarize_audio(temp_path: str | None, content_type: str, transcript: str, speaker_count: int) -> dict:
+    if not transcript and temp_path:
+        stt = translate_speech_to_text(temp_path, content_type=content_type)
+        transcript = stt.get("transcript", "").strip()
+    if not transcript:
+        raise HTTPException(
+            status_code=422,
+            detail="Could not transcribe audio — speak clearly and try again",
+        )
+
+    segments, method = diarize(transcript, temp_path, speaker_count)
+
+    speaker_counts = {}
+    for s in segments:
+        speaker_counts[s["speaker"]] = speaker_counts.get(s["speaker"], 0) + 1
+    for s in segments:
+        s["confidence"] = round(min(0.95, 0.6 + (speaker_counts[s["speaker"]] / len(segments)) * 0.35), 2)
+
+    return {
+        "transcript": transcript,
+        "segments": segments,
+        "speaker_count": len(speaker_counts),
+        "method": method,
+    }
 
 
 @router.post("/diarize-audio")
@@ -129,165 +162,22 @@ async def handle_diarize_audio(
     """
     Diarize audio into speaker segments.
     - If 'transcript' form field is provided, skip STT and use it directly.
-    - If 'file' is provided, transcribe it first.
+    - If 'file' is provided, it is used for STT (when no transcript) and audio-based diarization.
     """
-    full_transcript = transcript.strip()
-
-    # Only process audio file if no transcript was provided
-    if not full_transcript and file is not None:
-        original_filename = file.filename or "recording.webm"
-        content_type = file.content_type or "audio/webm"
-        os.makedirs("temp_audio", exist_ok=True)
-        temp_path = f"temp_audio/diarize_{original_filename}"
-        try:
-            async with aiofiles.open(temp_path, "wb") as f:
-                while chunk := await file.read(1024 * 1024):
-                    await f.write(chunk)
-
-            stt = translate_speech_to_text(temp_path, content_type=content_type)
-            full_transcript = stt.get("transcript", "").strip()
-        finally:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-
-    if not full_transcript:
-        raise HTTPException(
-            status_code=422,
-            detail="Could not transcribe audio — speak clearly and try again",
-        )
-
+    temp_path = None
+    content_type = ""
     try:
-        # Audio-based diarization only works if we have a temp file
-        temp_path_for_diarize = locals().get("temp_path", "")
-        from services.audio_diarization import diarize_audio_file
-
-        segments_raw = (
-            diarize_audio_file(temp_path_for_diarize, full_transcript)
-            if temp_path_for_diarize and os.path.exists(temp_path_for_diarize)
-            else []
-        )
-        method = "audio" if segments_raw else "gemini"
-
-        # Fallback to Gemini text-based if audio diarization failed
-        if not segments_raw:
-            logger.warning(
-                "[diarize] Audio diarization returned no segments, falling back to Gemini text split"
-            )
-            method = "gemini"
-            GEMINI_KEY = os.getenv("GEMINI_API_KEY")
-            segments_raw = []
-
-            if GEMINI_KEY:
-                try:
-                    import google.generativeai as genai
-
-                    genai.configure(api_key=GEMINI_KEY)
-                    model = genai.GenerativeModel("gemini-2.5-flash")
-
-                    if speaker_count >= 2:
-                        speaker_instruction = (
-                            f"IMPORTANT: There are EXACTLY {speaker_count} speakers. "
-                            f"You MUST use exactly {speaker_count} different people: "
-                            f"{', '.join([f'Person {i+1}' for i in range(speaker_count)])}."
-                        )
-                    else:
-                        speaker_instruction = "Identify how many distinct speakers there are (2 to 5)."
-
-                    prompt = f"""You are an expert conversation analyst.
-
-{speaker_instruction}
-
-Split this transcript into individual speaker turns.
-- Every sentence belongs to exactly one speaker
-- Short responses like "yes", "okay" are often a different speaker
-- Questions are usually answered by a different speaker
-- Detect emotion per segment: happy, neutral, serious, sad, angry, excited
-- Return ONLY a valid JSON array
-
-Format:
-[
-  {{"speaker": "Person 1", "text": "...", "emotion": "neutral"}},
-  {{"speaker": "Person 2", "text": "...", "emotion": "happy"}}
-]
-
-Transcript:
-{full_transcript}"""
-
-                    resp = model.generate_content(prompt)
-                    raw = resp.text.strip()
-                    if raw.startswith("```"):
-                        raw = raw.split("```")[1]
-                        if raw.startswith("json"):
-                            raw = raw[4:]
-                    import json
-
-                    parsed = json.loads(raw.strip())
-                    if isinstance(parsed, list) and parsed:
-                        for seg in parsed:
-                            sp = str(seg.get("speaker", "Person 1")).strip()
-                            num = int(
-                                "".join(filter(str.isdigit, sp)) or "1"
-                            )
-                            num = min(num, 5)
-                            segments_raw.append(
-                                {
-                                    "speaker": f"Person {num}",
-                                    "text": str(seg.get("text", "")).strip(),
-                                    "emotion": str(
-                                        seg.get("emotion", "neutral")
-                                    ).lower(),
-                                    "gender": "male",
-                                }
-                            )
-                        segments_raw = [s for s in segments_raw if s["text"]]
-                except Exception as e:
-                    logger.warning(f"[diarize] Gemini fallback failed: {e}")
-
-        # Last resort: sentence split
-        if not segments_raw:
-            method = "fallback"
-            import re
-
-            n_sp = max(2, min(5, speaker_count if speaker_count >= 2 else 2))
-            sentences = re.split(r"(?<=[.!?])\s+", full_transcript)
-            sentences = [s.strip() for s in sentences if s.strip()]
-            for i, sent in enumerate(sentences):
-                segments_raw.append(
-                    {
-                        "speaker": f"Person {(i % n_sp) + 1}",
-                        "text": sent,
-                        "emotion": "neutral",
-                        "gender": "male" if i % 2 == 0 else "female",
-                    }
-                )
-
-        # Assign voices
-        for seg in segments_raw:
-            if "voice" not in seg:
-                seg["voice"] = {}
-        segments = assign_speaker_voices(segments_raw)
-
-        # Compute per-speaker confidence
-        speaker_counts = {}
-        for s in segments:
-            speaker_counts[s["speaker"]] = speaker_counts.get(s["speaker"], 0) + 1
-        total = len(segments)
-        for s in segments:
-            count = speaker_counts[s["speaker"]]
-            s["confidence"] = round(min(0.95, 0.6 + (count / total) * 0.35), 2)
-
-        return {
-            "transcript": full_transcript,
-            "segments": segments,
-            "speaker_count": len(set(s["speaker"] for s in segments)),
-            "method": method,
-        }
-
+        if file is not None:
+            content_type = _resolve_content_type(file.content_type or "audio/webm", file.filename or "")
+            temp_path, _ = await _save_upload(file, "diarize_")
+        return await asyncio.to_thread(_diarize_audio, temp_path, content_type, transcript.strip(), speaker_count)
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"diarize-audio error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        _remove(temp_path)
 
 
 @router.post("/clone-voice")
@@ -296,28 +186,49 @@ async def handle_clone_voice(file: UploadFile = File(...)):
     Accept an audio sample and create an LMNT voice clone.
     Returns { voice_id, name } on success.
     """
-    from services.lmnt_service import clone_voice, is_available
-    if not is_available():
+    if not lmnt_service.is_available():
         raise HTTPException(status_code=503, detail="Voice cloning is not configured (LMNT_API_KEY missing)")
 
-    os.makedirs("temp_audio", exist_ok=True)
-    import uuid
-    ext = os.path.splitext(file.filename or "sample.webm")[1] or ".webm"
-    temp_path = f"temp_audio/clone_{uuid.uuid4().hex[:8]}{ext}"
-
+    temp_path, _ = await _save_upload(file, "clone_")
     try:
-        async with aiofiles.open(temp_path, "wb") as f:
-            while chunk := await file.read(CHUNK_SIZE):
-                await f.write(chunk)
-
-        voice_id = clone_voice(temp_path, voice_name=f"user_clone_{uuid.uuid4().hex[:6]}")
+        voice_id = await asyncio.to_thread(
+            lmnt_service.clone_voice, temp_path, f"user_clone_{uuid.uuid4().hex[:6]}"
+        )
         return {"voice_id": voice_id}
     except Exception as e:
         logger.error(f"clone-voice error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+        _remove(temp_path)
+
+
+def _clone_speaker_voices(audio_path: str, segments: list[dict]) -> dict:
+    speaker_voices = {}
+    for spk, sample_path in extract_speaker_audio_samples(audio_path, segments).items():
+        try:
+            speaker_voices[spk] = lmnt_service.clone_voice(
+                sample_path,
+                voice_name=f"spk_{spk.replace(' ', '_').lower()}_{uuid.uuid4().hex[:4]}",
+            )
+            logger.info(f"[dac] Cloned voice for {spk}: {speaker_voices[spk]}")
+        except Exception as e:
+            logger.warning(f"[dac] Clone failed for {spk}: {e}")
+        finally:
+            _remove(sample_path)
+    return speaker_voices
+
+
+def _diarize_and_clone(temp_path: str | None, transcript: str) -> dict:
+    segments, method = diarize(transcript, temp_path)
+    speaker_voices = {}
+    if temp_path and lmnt_service.is_available():
+        speaker_voices = _clone_speaker_voices(temp_path, segments)
+    return {
+        "segments": segments,
+        "speaker_voices": speaker_voices,
+        "speaker_count": len(set(s["speaker"] for s in segments)),
+        "method": method,
+    }
 
 
 @router.post("/diarize-and-clone")
@@ -334,114 +245,29 @@ async def handle_diarize_and_clone(
     if not full_transcript:
         raise HTTPException(status_code=422, detail="Transcript is required")
 
-    os.makedirs("temp_audio", exist_ok=True)
-    import uuid, json, re
     temp_path = None
-
-    if file is not None:
-        ext = os.path.splitext(file.filename or "audio.webm")[1] or ".webm"
-        temp_path = f"temp_audio/dac_{uuid.uuid4().hex[:8]}{ext}"
-        try:
-            async with aiofiles.open(temp_path, "wb") as f:
-                while chunk := await file.read(CHUNK_SIZE):
-                    await f.write(chunk)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"File save failed: {e}")
-
     try:
-        from services.audio_diarization import diarize_audio_file, extract_speaker_audio_samples
-
-        # Step 1: diarize
-        segments_raw = []
-        method = "text"
-        if temp_path and os.path.exists(temp_path):
-            try:
-                segments_raw = diarize_audio_file(temp_path, full_transcript)
-                if segments_raw:
-                    method = "audio"
-            except Exception as e:
-                logger.warning(f"[dac] audio diarization failed: {e}")
-
-        if not segments_raw:
-            GEMINI_KEY = os.getenv("GEMINI_API_KEY")
-            if GEMINI_KEY:
-                try:
-                    import google.generativeai as genai
-                    genai.configure(api_key=GEMINI_KEY)
-                    model = genai.GenerativeModel("gemini-2.5-flash")
-                    prompt = f"""Split this transcript into speaker turns (2-4 speakers).
-Return ONLY valid JSON array:
-[{{"speaker":"Person 1","text":"...","emotion":"neutral","start":0,"end":0}}]
-
-Transcript:
-{full_transcript}"""
-                    resp = model.generate_content(prompt)
-                    raw = resp.text.strip()
-                    if raw.startswith("```"):
-                        raw = raw.split("```")[1]
-                        if raw.startswith("json"):
-                            raw = raw[4:]
-                    parsed = json.loads(raw.strip())
-                    if isinstance(parsed, list):
-                        segments_raw = [s for s in parsed if str(s.get("text","")).strip()]
-                except Exception as e:
-                    logger.warning(f"[dac] Gemini fallback failed: {e}")
-
-        if not segments_raw:
-            sentences = re.split(r'(?<=[.!?])\s+', full_transcript)
-            segments_raw = [
-                {"speaker": f"Person {(i%2)+1}", "text": s.strip(), "emotion": "neutral", "start": 0, "end": 0}
-                for i, s in enumerate(sentences) if s.strip()
-            ]
-            method = "fallback"
-
-        for seg in segments_raw:
-            seg.setdefault("voice", {})
-        segments = assign_speaker_voices(segments_raw)
-
-        # Step 2: clone per speaker
-        speaker_voices = {}
-        from services.lmnt_service import clone_voice, is_available as lmnt_available
-        if lmnt_available() and temp_path and os.path.exists(temp_path):
-            speaker_audio_paths = extract_speaker_audio_samples(temp_path, segments)
-            for spk, audio_path in speaker_audio_paths.items():
-                try:
-                    voice_id = clone_voice(
-                        audio_path,
-                        voice_name=f"spk_{spk.replace(' ','_').lower()}_{uuid.uuid4().hex[:4]}"
-                    )
-                    speaker_voices[spk] = voice_id
-                    logger.info(f"[dac] Cloned voice for {spk}: {voice_id}")
-                except Exception as e:
-                    logger.warning(f"[dac] Clone failed for {spk}: {e}")
-                finally:
-                    if os.path.exists(audio_path):
-                        os.remove(audio_path)
-
-        return {
-            "segments": segments,
-            "speaker_voices": speaker_voices,
-            "speaker_count": len(set(s["speaker"] for s in segments)),
-            "method": method,
-        }
-
+        if file is not None:
+            temp_path, _ = await _save_upload(file, "dac_")
+        return await asyncio.to_thread(_diarize_and_clone, temp_path, full_transcript)
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"diarize-and-clone error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        if temp_path and os.path.exists(temp_path):
-            os.remove(temp_path)
+        _remove(temp_path)
 
 
 @router.post("/synthesize-conversation")
-async def handle_synthesize_conversation(request: dict):
+def handle_synthesize_conversation(request: dict):
     """
     Generate TTS audio for each speaker segment in the target language.
     Returns base64 audio per segment.
     """
     segments = request.get("segments", [])
+    if len(segments) > MAX_SYNTH_SEGMENTS:
+        raise HTTPException(status_code=400, detail=f"Too many segments. Maximum is {MAX_SYNTH_SEGMENTS}.")
     target_language = request.get("target_language", "hi-IN")
     cloned_voice_id = request.get("cloned_voice_id")
     speaker_voices  = request.get("speaker_voices", {})   # { "Person 1": "lmnt_id" }
@@ -451,7 +277,7 @@ async def handle_synthesize_conversation(request: dict):
         translated_text = seg.get("translated_text") or seg.get("text", "")
         emotion = seg.get("emotion", "neutral")
         voice_info = seg.get("voice", {})
-        speaker = voice_info.get("sarvam", "anushka")
+        speaker = voice_info.get("sarvam", DEFAULT_SPEAKER)
         gender = voice_info.get("gtts_gender", "female")
         spk_label = seg.get("speaker", "Person 1")
 
@@ -461,8 +287,7 @@ async def handle_synthesize_conversation(request: dict):
         audio_path = None
         try:
             if lmnt_id:
-                from services.lmnt_service import synthesize as lmnt_synthesize
-                audio_path = lmnt_synthesize(translated_text, lmnt_id, target_language)
+                audio_path = lmnt_service.synthesize(translated_text, lmnt_id, target_language)
             else:
                 audio_path = text_to_speech_sarvam(translated_text, target_language, speaker)
         except Exception:
@@ -491,7 +316,7 @@ async def handle_synthesize_conversation(request: dict):
 
 
 @router.post("/text-to-speech")
-async def handle_text_to_speech(request: TTSRequest):
+def handle_text_to_speech(request: TTSRequest):
     """
     Converts text to speech and returns an audio file.
     Uses gTTS by default, set use_sarvam=true for Sarvam AI TTS.
@@ -503,8 +328,6 @@ async def handle_text_to_speech(request: TTSRequest):
         raise HTTPException(
             status_code=400, detail="Text too long. Maximum 5000 characters."
         )
-
-    temp_audio_path = None
 
     try:
         logger.info(
@@ -521,17 +344,13 @@ async def handle_text_to_speech(request: TTSRequest):
         else:
             gtts_lang = get_gtts_language_code(request.language)
             temp_audio_path = text_to_speech_gtts(request.text, gtts_lang)
-
-        return FileResponse(
-            path=temp_audio_path,
-            media_type="audio/wav" if request.use_sarvam else "audio/mpeg",
-            filename="speech.wav" if request.use_sarvam else "speech.mp3",
-        )
-
-    except HTTPException:
-        raise
     except Exception as e:
         logger.error(f"TTS error: {e}")
-        if temp_audio_path and os.path.exists(temp_audio_path):
-            os.remove(temp_audio_path)
         raise HTTPException(status_code=500, detail=str(e))
+
+    return FileResponse(
+        path=temp_audio_path,
+        media_type="audio/wav" if request.use_sarvam else "audio/mpeg",
+        filename="speech.wav" if request.use_sarvam else "speech.mp3",
+        background=BackgroundTask(_remove, temp_audio_path),
+    )

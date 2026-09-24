@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
-APP_DIR="$ROOT_DIR/Translate-agent"
+APP_DIR="$ROOT_DIR"  # docker-compose.yml lives at the repo root
 WIDGET_DIR="$ROOT_DIR/desktop-widget"
 WIDGET_PORT="27182"
 LOG_DIR="$ROOT_DIR/.run-logs"
@@ -29,8 +29,8 @@ node -e "fetch('http://127.0.0.1:$WIDGET_PORT/enable').then(r=>r.text()).then(co
 
 echo
 echo "App URLs:"
-echo "  Frontend: http://localhost:5173"
-echo "  Backend:  http://localhost:8000/docs"
+echo "  Frontend: http://localhost:3000"
+echo "  Backend:  http://localhost:8001/docs"
 echo
 echo "Widget:"
 echo "  Control server: http://127.0.0.1:$WIDGET_PORT"

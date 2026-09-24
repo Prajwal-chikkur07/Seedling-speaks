@@ -18,7 +18,7 @@ const TONE_COLORS = {
 
 export default function TemplatesScreen() {
   const insets = useSafeAreaInsets();
-  const { state, deleteTemplate, clearTemplates } = useApp();
+  const { state, deleteTemplate } = useApp();
   const [search, setSearch] = useState('');
   const [filterTone, setFilterTone] = useState('All');
 
@@ -62,7 +62,7 @@ export default function TemplatesScreen() {
           filtered.map((t, i) => {
             const color = TONE_COLORS[t.tone] || COLORS.muted;
             return (
-              <View key={i} style={st.card}>
+              <View key={t.id || i} style={st.card}>
                 <View style={st.cardHeader}>
                   <View style={[st.toneBadge, { backgroundColor: color + '15' }]}>
                     <Text style={[st.toneBadgeText, { color }]}>{t.tone}</Text>
@@ -71,10 +71,10 @@ export default function TemplatesScreen() {
                 </View>
                 <Text style={st.templateText} numberOfLines={4}>{t.text}</Text>
                 <View style={st.cardActions}>
-                  <TouchableOpacity onPress={() => Clipboard.setStringAsync(t.text)}>
+                  <TouchableOpacity onPress={() => Clipboard.setStringAsync(t.text || '').catch(() => Alert.alert('Copy failed', 'Could not copy to clipboard.'))}>
                     <Text style={st.actionText}>📋 Copy</Text>
                   </TouchableOpacity>
-                  <TouchableOpacity onPress={() => deleteTemplate(i)}>
+                  <TouchableOpacity onPress={() => deleteTemplate(t.id)}>
                     <Text style={[st.actionText, { color: COLORS.redSoft }]}>🗑 Delete</Text>
                   </TouchableOpacity>
                 </View>

@@ -12,21 +12,25 @@ Gender detection:
   - Female: fundamental frequency ~165–255 Hz
   - Overlap zone: use spectral centroid as tiebreaker
 """
-import os
 import logging
+import re
+import tempfile
+from collections import defaultdict
+
+import librosa
 import numpy as np
-from pathlib import Path
+import soundfile as sf
+
+from services.gemini_client import GEMINI_API_KEY, generate_json
+from services.tts_service import MALE_VOICES, FEMALE_VOICES
 
 logger = logging.getLogger(__name__)
 
-# Sarvam TTS voices mapped by gender
-MALE_VOICES   = ["abhilash", "karun", "arvind", "amol"]
-FEMALE_VOICES = ["anushka", "vidya", "pavithra", "meera"]
+DEFAULT_VOICE = {"sarvam": MALE_VOICES[0], "gtts_gender": "male"}
 
 
 def _load_audio(path: str):
     """Load audio as mono float32 array. Returns (samples, sample_rate)."""
-    import librosa
     y, sr = librosa.load(path, sr=16000, mono=True)
     return y, sr
 
@@ -36,7 +40,6 @@ def _detect_speech_segments(y, sr, min_silence_ms=400, min_speech_ms=300):
     Split audio into speech segments using energy-based VAD.
     Returns list of (start_sample, end_sample).
     """
-    import librosa
     frame_len  = int(sr * 0.025)   # 25ms frames
     hop_len    = int(sr * 0.010)   # 10ms hop
     rms        = librosa.feature.rms(y=y, frame_length=frame_len, hop_length=hop_len)[0]
@@ -83,7 +86,6 @@ def _extract_features(y_seg, sr):
     Extract voice features for a speech segment.
     Returns dict with: mean_pitch, pitch_std, spectral_centroid, energy
     """
-    import librosa
 
     # Pitch via YIN algorithm
     f0 = librosa.yin(y_seg, fmin=60, fmax=400, sr=sr)
@@ -180,7 +182,7 @@ def _cluster_speakers(seg_features: list[dict], similarity_threshold=0.96) -> li
     return speaker_ids
 
 
-def diarize_audio_file(audio_path: str, transcript: str, full_transcript_segments: list = None) -> list[dict]:
+def diarize_audio_file(audio_path: str, transcript: str) -> list[dict]:
     """
     Main entry point. Returns list of:
     {
@@ -193,12 +195,6 @@ def diarize_audio_file(audio_path: str, transcript: str, full_transcript_segment
       voice: { sarvam: "abhilash", gtts_gender: "male" }
     }
     """
-    try:
-        import librosa
-    except ImportError:
-        logger.warning("[audio_diarize] librosa not installed, falling back to text-based")
-        return []
-
     try:
         y, sr = _load_audio(audio_path)
         duration = len(y) / sr
@@ -294,9 +290,6 @@ def _align_transcript_to_segments(
     Use Gemini to split transcript text according to the audio-detected speaker pattern.
     We know WHO spoke WHEN from audio — Gemini just assigns the text.
     """
-    import os, json
-    GEMINI_KEY = os.getenv("GEMINI_API_KEY")
-
     # Build speaker sequence from audio (e.g. [P1, P1, P2, P3, P1, P2])
     speaker_sequence = seg_speakers  # already ordered by time
 
@@ -306,12 +299,8 @@ def _align_transcript_to_segments(
         for i in range(n_speakers)
     ])
 
-    if GEMINI_KEY and transcript.strip():
+    if GEMINI_API_KEY and transcript.strip():
         try:
-            import google.generativeai as genai
-            genai.configure(api_key=GEMINI_KEY)
-            model = genai.GenerativeModel("gemini-2.5-flash")
-
             # Tell Gemini the exact speaker order detected from audio
             seq_str = " → ".join(speaker_sequence[:30])  # first 30 turns
 
@@ -340,13 +329,7 @@ Rules:
 Transcript:
 {transcript}"""
 
-            resp = model.generate_content(prompt)
-            raw  = resp.text.strip()
-            if raw.startswith("```"):
-                raw = raw.split("```")[1]
-                if raw.startswith("json"):
-                    raw = raw[4:]
-            parsed = json.loads(raw.strip())
+            parsed = generate_json(prompt)
 
             if isinstance(parsed, list) and parsed:
                 results = []
@@ -355,7 +338,7 @@ Transcript:
                     spk_num   = int(''.join(filter(str.isdigit, spk_label)) or "1") - 1
                     spk_num   = max(0, min(spk_num, n_speakers - 1))
                     gender    = speaker_gender.get(spk_num, "male")
-                    voice     = speaker_voice.get(spk_num, {"sarvam": "abhilash", "gtts_gender": "male"})
+                    voice     = speaker_voice.get(spk_num, DEFAULT_VOICE)
                     start     = seg_times[i][0] if i < len(seg_times) else 0
                     end       = seg_times[i][1] if i < len(seg_times) else 0
                     results.append({
@@ -372,7 +355,6 @@ Transcript:
             logger.warning(f"[audio_diarize] Gemini alignment failed: {e}")
 
     # Fallback: simple proportional split
-    import re
     sentences = re.split(r'(?<=[.!?])\s+', transcript)
     sentences = [s.strip() for s in sentences if s.strip()]
     results   = []
@@ -380,7 +362,7 @@ Transcript:
         spk_label = speaker_sequence[i % len(speaker_sequence)]
         spk_num   = int(''.join(filter(str.isdigit, spk_label)) or "1") - 1
         gender    = speaker_gender.get(spk_num, "male")
-        voice     = speaker_voice.get(spk_num, {"sarvam": "abhilash", "gtts_gender": "male"})
+        voice     = speaker_voice.get(spk_num, DEFAULT_VOICE)
         results.append({
             "speaker": spk_label,
             "gender":  gender,
@@ -398,15 +380,6 @@ def extract_speaker_audio_samples(audio_path: str, segments: list[dict]) -> dict
     Extract and concatenate audio per speaker using segment timing.
     Returns { "Person 1": "/tmp/xxx.wav", "Person 2": "/tmp/yyy.wav" }
     """
-    try:
-        import librosa
-        import soundfile as sf
-        import numpy as np
-        from collections import defaultdict
-    except ImportError:
-        logger.warning("[audio_diarize] soundfile not installed, skipping extraction")
-        return {}
-
     try:
         y, sr = librosa.load(audio_path, sr=16000, mono=True)
         duration = len(y) / sr
@@ -432,7 +405,6 @@ def extract_speaker_audio_samples(audio_path: str, segments: list[dict]) -> dict
             if len(combined) / sr < 2.0:   # need ≥2s
                 continue
             combined = combined[:int(30 * sr)]   # cap at 30s
-            import tempfile
             tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
             sf.write(tmp.name, combined, sr)
             tmp.close()

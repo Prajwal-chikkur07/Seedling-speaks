@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
-APP_DIR="$ROOT_DIR/Translate-agent"
+APP_DIR="$ROOT_DIR"  # docker-compose.yml lives at the repo root
 WIDGET_PORT="27182"
 
 echo "Stopping backend and frontend..."

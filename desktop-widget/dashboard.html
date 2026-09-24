@@ -204,7 +204,6 @@
   </div>
 
   <script>
-    const { ipcRenderer } = require('electron');
 
     const toggle = document.getElementById('widgetToggle');
     const statusDesc = document.getElementById('statusDesc');
@@ -213,12 +212,12 @@
     const userEmail = document.getElementById('userEmail');
 
     // Load initial state
-    ipcRenderer.invoke('get-widget-enabled').then(enabled => {
+    window.widget.invoke('get-widget-enabled').then(enabled => {
       toggle.checked = enabled;
       statusDesc.textContent = enabled ? 'The widget is currently visible' : 'The widget is hidden';
     });
 
-    ipcRenderer.invoke('get-user-info').then(user => {
+    window.widget.invoke('get-user-info').then(user => {
       if (user) {
         userName.textContent = `${user.firstName || ''} ${user.lastName || ''}`.trim() || 'Seedling User';
         userEmail.textContent = user.email;
@@ -228,19 +227,19 @@
 
     toggle.addEventListener('change', () => {
       if (toggle.checked) {
-        ipcRenderer.send('enable-widget');
+        window.widget.send('enable-widget');
         statusDesc.textContent = 'The widget is currently visible';
       } else {
-        ipcRenderer.send('disable-widget');
+        window.widget.send('disable-widget');
         statusDesc.textContent = 'The widget is hidden';
       }
     });
 
     document.getElementById('signOutBtn').addEventListener('click', () => {
-      ipcRenderer.send('sign-out');
+      window.widget.send('sign-out');
     });
 
-    ipcRenderer.on('widget-state-changed', (event, enabled) => {
+    window.widget.on('widget-state-changed', (enabled) => {
       toggle.checked = enabled;
       statusDesc.textContent = enabled ? 'The widget is currently visible' : 'The widget is hidden';
     });

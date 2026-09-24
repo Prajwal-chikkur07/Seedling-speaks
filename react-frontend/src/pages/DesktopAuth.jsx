@@ -1,16 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
 import { SignIn, useAuth, useUser } from '@clerk/clerk-react';
 import { useSearchParams } from 'react-router-dom';
+import { WIDGET_URL } from '../services/widgetService';
 
 export default function DesktopAuth() {
   const { isSignedIn, getToken } = useAuth();
   const { user: clerkUser } = useUser();
   const [searchParams] = useSearchParams();
+  // Nonce from the desktop widget; echoed back so it can reject callbacks it didn't start
+  const authState = searchParams.get('state') || '';
   const sentRef = useRef(false);
   const [status, setStatus] = useState('waiting'); // waiting | sending | success | error
   const [errorMessage, setErrorMessage] = useState('');
-
-  const port = searchParams.get('port') || '27182';
 
   useEffect(() => {
     if (isSignedIn && clerkUser && !sentRef.current) {
@@ -32,15 +33,14 @@ export default function DesktopAuth() {
         firstName: clerkUser.firstName || '',
         lastName: clerkUser.lastName || '',
         token: token || '',
+        state: authState,
       };
-
-      console.log('Attempting to connect to desktop on port:', port);
 
       // We use a shorter timeout for the fetch
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 5000);
 
-      const res = await fetch(`http://127.0.0.1:${port}/auth-callback`, {
+      const res = await fetch(`${WIDGET_URL}/auth-callback`, {
         method: 'POST',
         mode: 'cors',
         headers: { 'Content-Type': 'application/json' },
@@ -58,7 +58,7 @@ export default function DesktopAuth() {
     } catch (err) {
       console.error('Desktop connection error:', err);
       setStatus('error');
-      setErrorMessage(err.message === 'AbortError' ? 'Connection timed out' : err.message);
+      setErrorMessage(err.name === 'AbortError' ? 'Connection timed out' : err.message);
       sentRef.current = false; // Allow retry
     }
   }

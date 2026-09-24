@@ -18,7 +18,7 @@ import hashlib
 import logging
 import os
 from datetime import datetime
-from threading import Thread
+from threading import Lock, Thread
 from typing import Optional
 
 import numpy as np
@@ -32,12 +32,15 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "..", "translation_cache.db")
 MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
 
 _model = None
+_initialized = False
+_init_lock = Lock()
 
 
 def _get_model():
     global _model
     if _model is None:
         try:
+            # Optional ~120MB model dependency; only imported when semantic cache is used.
             from sentence_transformers import SentenceTransformer
             logger.info(f"Loading sentence-transformers model: {MODEL_NAME}")
             _model = SentenceTransformer(MODEL_NAME)
@@ -48,13 +51,17 @@ def _get_model():
     return _model if _model is not False else None
 
 
-def _warmup():
-    """Load the model in a background thread at startup so first request is fast."""
-    def _load():
-        _get_model()
-    Thread(target=_load, daemon=True).start()
-
-_warmup()
+def _ensure_init():
+    """Create the table and start loading the embedding model in the background, once."""
+    global _initialized
+    if _initialized:
+        return
+    with _init_lock:
+        if _initialized:
+            return
+        _init_db()
+        Thread(target=_get_model, daemon=True).start()
+        _initialized = True
 
 
 def _init_db():
@@ -75,9 +82,6 @@ def _init_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_lang ON translation_cache(target_lang)")
     conn.commit()
     conn.close()
-
-
-_init_db()
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -110,6 +114,7 @@ def get_cached(text: str, lang: str, threshold: float = 0.92) -> Optional[str]:
     Layer 1: exact hash — always runs, instant.
     Layer 2: semantic similarity — only runs if model is already loaded (non-blocking).
     """
+    _ensure_init()
     conn = sqlite3.connect(DB_PATH)
     now = datetime.utcnow().isoformat()
     try:
@@ -136,6 +141,8 @@ def get_cached(text: str, lang: str, threshold: float = 0.92) -> Optional[str]:
         if query_emb is None:
             return None
 
+        # ponytail: full scan of every embedding for this language per miss; fine to ~tens of
+        # thousands of rows, needs a vector index beyond that.
         rows = conn.execute(
             "SELECT cache_key, translation, embedding FROM translation_cache "
             "WHERE target_lang=? AND embedding IS NOT NULL",
@@ -167,6 +174,7 @@ def get_cached(text: str, lang: str, threshold: float = 0.92) -> Optional[str]:
 
 def store_translation(text: str, lang: str, translation: str) -> None:
     """Persist a new translation. Embedding is computed in a background thread."""
+    _ensure_init()
     key = _make_key(text, lang)
     now = datetime.utcnow().isoformat()
 
@@ -205,6 +213,7 @@ def store_translation(text: str, lang: str, translation: str) -> None:
 
 
 def get_stats() -> dict:
+    _ensure_init()
     conn = sqlite3.connect(DB_PATH)
     try:
         total = conn.execute("SELECT COUNT(*) FROM translation_cache").fetchone()[0]
@@ -224,6 +233,7 @@ def get_stats() -> dict:
 
 def clear_cache(lang: Optional[str] = None) -> int:
     """Delete cache entries. Returns number of rows deleted."""
+    _ensure_init()
     conn = sqlite3.connect(DB_PATH)
     try:
         if lang:

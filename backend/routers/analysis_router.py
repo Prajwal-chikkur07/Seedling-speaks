@@ -58,7 +58,7 @@ class ToneConfidenceRequest(BaseModel):
 
 
 @router.post("/analyze-sentiment")
-async def handle_sentiment(request: SentimentRequest):
+def handle_sentiment(request: SentimentRequest):
     """Returns sentiment analysis: positive/neutral/negative with score and summary."""
     if not request.text.strip():
         raise HTTPException(status_code=400, detail="Text cannot be empty")
@@ -69,7 +69,7 @@ async def handle_sentiment(request: SentimentRequest):
 
 
 @router.post("/suggest-tone")
-async def handle_suggest_tone(request: ToneSuggestRequest):
+def handle_suggest_tone(request: ToneSuggestRequest):
     """Returns the best tone for the given text."""
     if not request.text.strip():
         raise HTTPException(status_code=400, detail="Text cannot be empty")
@@ -81,7 +81,7 @@ async def handle_suggest_tone(request: ToneSuggestRequest):
 
 
 @router.post("/summarize")
-async def handle_summarize(request: SummarizeRequest):
+def handle_summarize(request: SummarizeRequest):
     """Returns a 2-3 sentence TL;DR of the transcript."""
     if not request.text.strip():
         raise HTTPException(status_code=400, detail="Text cannot be empty")
@@ -92,7 +92,7 @@ async def handle_summarize(request: SummarizeRequest):
 
 
 @router.post("/meeting-notes")
-async def handle_meeting_notes(request: MeetingNotesRequest):
+def handle_meeting_notes(request: MeetingNotesRequest):
     """Returns structured meeting notes from a transcript."""
     if not request.text.strip():
         raise HTTPException(status_code=400, detail="Text cannot be empty")
@@ -103,7 +103,7 @@ async def handle_meeting_notes(request: MeetingNotesRequest):
 
 
 @router.post("/qa")
-async def handle_qa(request: QARequest):
+def handle_qa(request: QARequest):
     """Answers a question about the transcript."""
     if not request.transcript.strip() or not request.question.strip():
         raise HTTPException(
@@ -116,7 +116,7 @@ async def handle_qa(request: QARequest):
 
 
 @router.post("/readability")
-async def handle_readability(request: ReadabilityRequest):
+def handle_readability(request: ReadabilityRequest):
     """Returns Flesch-Kincaid readability score for the given text."""
     if not request.text.strip():
         raise HTTPException(status_code=400, detail="Text cannot be empty")
@@ -124,7 +124,7 @@ async def handle_readability(request: ReadabilityRequest):
 
 
 @router.post("/tone-confidence")
-async def handle_tone_confidence(request: ToneConfidenceRequest):
+def handle_tone_confidence(request: ToneConfidenceRequest):
     """Rates how well the rewritten text matches the intended tone."""
     if not request.text.strip():
         raise HTTPException(status_code=400, detail="Text cannot be empty")
