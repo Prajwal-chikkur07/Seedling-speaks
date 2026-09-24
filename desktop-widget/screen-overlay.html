@@ -164,18 +164,17 @@
   </div>
 
   <script>
-    const { ipcRenderer } = require('electron');
     const labelsContainer = document.getElementById('labels-container');
     const clickBanner = document.getElementById('click-banner');
 
     // ── Clear all ──
-    ipcRenderer.on('clear', () => {
+    window.widget.on('clear', () => {
       labelsContainer.innerHTML = '';
       clickBanner.classList.remove('active');
     });
 
     // ── Show translated regions as floating labels ──
-    ipcRenderer.on('show-translations', (_, { regions, offsetX = 0, offsetY = 0, screenWidth, screenHeight }) => {
+    window.widget.on('show-translations', ({ regions, offsetX = 0, offsetY = 0, screenWidth, screenHeight }) => {
       const imgW = screenWidth || window.screen.width;
       const imgH = screenHeight || window.screen.height;
 
@@ -202,7 +201,7 @@
     });
 
     // ── Show click result ──
-    ipcRenderer.on('show-click-result', (_, { regions, offsetX = 0, offsetY = 0, regionW, regionH, clickX, clickY, message }) => {
+    window.widget.on('show-click-result', ({ regions, offsetX = 0, offsetY = 0, regionW, regionH, clickX, clickY, message }) => {
       document.querySelectorAll('.click-spinner').forEach(s => s.remove());
 
       if (message || !regions || regions.length === 0) {
@@ -237,13 +236,13 @@
     }
 
     // ── Click mode banner ──
-    ipcRenderer.on('start-click-mode', () => {
+    window.widget.on('start-click-mode', () => {
       clickBanner.classList.add('active');
       labelsContainer.innerHTML = '';
     });
 
     // Show spinner at cursor position when translating
-    ipcRenderer.on('show-click-spinner', (_, { x, y }) => {
+    window.widget.on('show-click-spinner', ({ x, y }) => {
       document.querySelectorAll('.click-spinner').forEach(s => s.remove());
       const spinner = document.createElement('div');
       spinner.className = 'click-spinner';
@@ -255,7 +254,7 @@
     document.getElementById('stop-click-btn').addEventListener('click', () => {
       clickBanner.classList.remove('active');
       labelsContainer.innerHTML = '';
-      ipcRenderer.send('stop-screen-mode');
+      window.widget.send('stop-screen-mode');
     });
 
     function escHtml(str) {

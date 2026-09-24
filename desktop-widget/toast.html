@@ -134,7 +134,6 @@
   </div>
 
   <script>
-    const { ipcRenderer } = require('electron');
 
     const dot = document.getElementById('dot');
     const label = document.getElementById('label');
@@ -145,7 +144,7 @@
 
     const LABELS = { loading: 'Working', result: 'Translation', success: 'Done', error: 'Error', info: '' };
 
-    ipcRenderer.on('toast-data', (_, data) => {
+    window.widget.on('toast-data', (data) => {
       dot.className = 'dot ' + data.type;
       label.textContent = LABELS[data.type] || '';
       msg.textContent = data.message || '';
@@ -173,12 +172,12 @@
     });
 
     stopBtn.addEventListener('click', () => {
-      ipcRenderer.send('ext-action', { type: 'STOP_TRANSLATION' });
-      ipcRenderer.send('hide-toast');
+      window.widget.send('ext-action', { type: 'STOP_TRANSLATION' });
+      window.widget.send('hide-toast');
     });
 
     dismissBtn.addEventListener('click', () => {
-      ipcRenderer.send('hide-toast');
+      window.widget.send('hide-toast');
     });
   </script>
 </body>

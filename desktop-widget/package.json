@@ -19,7 +19,9 @@
         "zip"
       ],
       "icon": "icon.png",
-      "hardenedRuntime": false,
+      "hardenedRuntime": true,
+      "entitlements": "entitlements.mac.plist",
+      "entitlementsInherit": "entitlements.mac.plist",
       "gatekeeperAssess": false,
       "extendInfo": {
         "NSMicrophoneUsageDescription": "SeedlingSpeaks needs microphone access for push-to-talk translation.",
@@ -43,6 +45,7 @@
     },
     "files": [
       "main.js",
+      "preload.js",
       "overlay.js",
       "overlay.html",
       "bubble.html",
@@ -52,14 +55,11 @@
       "screen-overlay.html",
       "region-select.html",
       "click-overlay.html",
-      "mode-menu.html",
-      "recording-popup.html",
       "fill_compose.sh",
       "icon.png",
       "ax_insert_text",
       "ax_text_at_cursor",
       "fn_watcher",
-      "space_hook",
       "ax_insert_text.swift",
       "ax_text_at_cursor.swift",
       "fn_watcher.swift"

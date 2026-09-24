@@ -4,6 +4,8 @@ TARGET="$1"
 SUBJECT="$2"
 BODY="$3"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# FILL_COMPOSE_DRY_RUN=1: print the AppleScript result instead of driving apps (tests)
+DRY_RUN="${FILL_COMPOSE_DRY_RUN:+1}"
 
 BODY_B64=$(printf '%s' "$BODY" | base64 | tr -d '\n')
 SUBJ_B64=$(printf '%s' "$SUBJECT" | base64 | tr -d '\n')
@@ -204,20 +206,20 @@ LINKEDIN_JS="(function(){
   return 'miss';
 })();"
 
-# ══════════════════════════════════════════════════════════════════════════════
-case "$TARGET" in
-  gmail)
-    # app.hide() gave Chrome focus. Gmail compose is open.
-    # Fill subject via JS (safe — doesn't close compose), then focus body and paste.
-    SUBJ_ESCAPED=$(printf '%s' "$SUBJECT" | sed "s/'/\\\\'/g")
-    osascript << ASEOF
-tell application "Google Chrome"
+# ── AppleScript programs (quoted heredocs: no shell expansion inside) ─────────
+# Values arrive via `on run argv`. The last arg is DRY_RUN: when "1" the script
+# returns what it would have used instead of touching Chrome/Mail (for tests).
+gmail_applescript() {
+  cat <<'ASEOF'
+on run argv
+  set subjB64 to item 1 of argv
   set js to "(function(){
+    var sv = new TextDecoder().decode(Uint8Array.from(atob('" & subjB64 & "'), function(c){ return c.charCodeAt(0); }));
     var s = document.querySelector('input[name=subjectbox]') || document.querySelector('.aoT');
     if (s) {
       s.click(); s.focus();
       var nv = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
-      if (nv && nv.set) nv.set.call(s, '$SUBJ_ESCAPED');
+      if (nv && nv.set) nv.set.call(s, sv);
       s.dispatchEvent(new Event('input', {bubbles:true}));
     }
     var b = document.querySelector('div[aria-label=\"Message Body\"]') ||
@@ -236,9 +238,36 @@ tell application "Google Chrome"
     if (b) { b.click(); b.focus(); return 'ok'; }
     return 'miss';
   })()"
-  execute active tab of front window javascript js
-end tell
+  if item 2 of argv is "1" then return js
+  tell application "Google Chrome"
+    execute active tab of front window javascript js
+  end tell
+end run
 ASEOF
+}
+
+applemail_applescript() {
+  cat <<'ASEOF'
+on run argv
+  set theSubject to item 1 of argv
+  set theBody to item 2 of argv
+  if item 3 of argv is "1" then return theSubject & linefeed & "---8<---" & linefeed & theBody
+  tell application "Mail"
+    make new outgoing message with properties {subject:theSubject, content:theBody, visible:true}
+    activate
+  end tell
+end run
+ASEOF
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+case "$TARGET" in
+  gmail)
+    # app.hide() gave Chrome focus. Gmail compose is open.
+    # Fill subject via JS (safe — doesn't close compose), then focus body and paste.
+    # The subject reaches AppleScript only as argv (base64), never as script text.
+    gmail_applescript | osascript - "$SUBJ_B64" "$DRY_RUN"
+    [ -n "$DRY_RUN" ] && exit 0
     printf '%s' "$BODY" | pbcopy
     sleep 0.3
     osascript -e 'tell application "System Events" to keystroke "v" using command down'
@@ -275,10 +304,8 @@ ASEOF
     ;;
 
   applemail)
-    run_as "tell application \"Mail\"
-  set newMsg to make new outgoing message with properties {subject:\"$SUBJECT\", content:\"$BODY\", visible:true}
-  activate
-end tell"
+    # Subject/body are passed as argv, never interpolated into the script.
+    applemail_applescript | osascript - "$SUBJECT" "$BODY" "$DRY_RUN"
     ;;
 
   *)

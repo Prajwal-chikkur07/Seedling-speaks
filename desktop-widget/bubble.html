@@ -151,7 +151,6 @@
   </div>
 
   <script>
-    const { ipcRenderer } = require('electron');
 
     const pill     = document.getElementById('pill');
     const recPill  = document.getElementById('recPill');
@@ -176,14 +175,14 @@
     pill.addEventListener('mousedown', async (e) => {
       isDragging = true; hasMoved = false;
       dragStartX = e.screenX; dragStartY = e.screenY;
-      const pos = await ipcRenderer.invoke('get-bubble-pos');
+      const pos = await window.widget.invoke('get-bubble-pos');
       winStartX = pos.x; winStartY = pos.y;
     });
     window.addEventListener('mousemove', (e) => {
       if (!isDragging) return;
       const dx = e.screenX - dragStartX, dy = e.screenY - dragStartY;
       if (Math.abs(dx) > 3 || Math.abs(dy) > 3) hasMoved = true;
-      ipcRenderer.send('bubble-drag', { x: winStartX + dx, y: winStartY + dy });
+      window.widget.send('bubble-drag', { x: winStartX + dx, y: winStartY + dy });
     });
     window.addEventListener('mouseup', () => {
       if (isDragging && !hasMoved) {
@@ -206,8 +205,7 @@
           setUIState('processing');
           const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
           const arrayBuffer = await audioBlob.arrayBuffer();
-          const buffer = Buffer.from(arrayBuffer);
-          ipcRenderer.send('process-audio', buffer);
+          window.widget.send('process-audio', new Uint8Array(arrayBuffer));
         };
 
         mediaRecorder.start();
@@ -230,14 +228,14 @@
         mediaRecorder.stream.getTracks().forEach(track => track.stop());
       }
       setUIState(false);
-      ipcRenderer.send('cancel-recording');
+      window.widget.send('cancel-recording');
     });
 
     document.getElementById('stopBtn').addEventListener('click', () => {
       stopRecording();
     });
 
-    ipcRenderer.on('toggle-recording', (event, active) => {
+    window.widget.on('toggle-recording', (active) => {
       if (active && !isRecording) {
         startRecording();
       } else if (!active && isRecording) {
@@ -245,21 +243,21 @@
       }
     });
 
-    ipcRenderer.on('recording-state', (_, recording) => {
+    window.widget.on('recording-state', (recording) => {
       setUIState(recording ? 'recording' : 'idle');
     });
 
-    ipcRenderer.on('processing-state', (_, active) => {
+    window.widget.on('processing-state', (active) => {
       if (active) setUIState('processing');
     });
 
-    ipcRenderer.on('processing-done', () => {
+    window.widget.on('processing-done', () => {
       setUIState('idle');
     });
 
     window.addEventListener('contextmenu', (e) => {
       e.preventDefault();
-      ipcRenderer.send('show-bubble-menu');
+      window.widget.send('show-bubble-menu');
     });
   </script>
 </body>

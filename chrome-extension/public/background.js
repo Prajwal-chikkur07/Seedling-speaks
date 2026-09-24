@@ -1,6 +1,9 @@
 // Background service worker for Voice Translation Extension
 
-const API_BASE = 'http://127.0.0.1:8001/api';
+// Backend base URL — the only place it is defined (content.js goes through here).
+// Must also be covered by host_permissions in manifest.json.
+const BACKEND_URL = 'http://127.0.0.1:8001';
+const API_BASE = `${BACKEND_URL}/api`;
 
 // Clicking the toolbar icon opens/toggles the sidebar panel on the active tab
 chrome.action.onClicked.addListener((tab) => {
@@ -44,48 +47,39 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   }
 });
 
-// ========== API PROXY FUNCTIONS ==========
+// ========== API PROXY ==========
+// Content scripts call the backend through here: the service worker has host
+// permissions, so page CORS rules don't apply.
 
-async function apiTranslateText(text, targetLanguage) {
-  const res = await fetch(`${API_BASE}/translate-text`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, target_language: targetLanguage }),
-  });
+async function apiPost(path, init) {
+  const res = await fetch(`${API_BASE}${path}`, { method: 'POST', ...init });
   if (!res.ok) throw new Error(await res.text());
-  return await res.json();
+  return res;
 }
 
-async function apiRewriteTone(text, tone, userOverride) {
-  const res = await fetch(`${API_BASE}/rewrite-tone`, {
-    method: 'POST',
+async function postJson(path, body) {
+  const res = await apiPost(path, {
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, tone, user_override: userOverride || null }),
+    body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(await res.text());
-  return await res.json();
+  return res.json();
 }
 
 async function apiTranslateAudio(base64Data, mimeType) {
   const byteString = atob(base64Data.split(',')[1]);
-  const ab = new ArrayBuffer(byteString.length);
-  const ia = new Uint8Array(ab);
+  const ia = new Uint8Array(byteString.length);
   for (let i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
-  const blob = new Blob([ab], { type: mimeType || 'audio/webm' });
   const formData = new FormData();
-  formData.append('file', blob, 'recording.webm');
-  const res = await fetch(`${API_BASE}/translate-audio`, { method: 'POST', body: formData });
-  if (!res.ok) throw new Error(await res.text());
-  return await res.json();
+  formData.append('file', new Blob([ia], { type: mimeType || 'audio/webm' }), 'recording.webm');
+  const res = await apiPost('/translate-audio', { body: formData });
+  return res.json();
 }
 
 async function apiTextToSpeech(text, language) {
-  const res = await fetch(`${API_BASE}/text-to-speech`, {
-    method: 'POST',
+  const res = await apiPost('/text-to-speech', {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text, language }),
   });
-  if (!res.ok) throw new Error(await res.text());
   const blob = await res.blob();
   return new Promise((resolve) => {
     const reader = new FileReader();
@@ -94,29 +88,15 @@ async function apiTextToSpeech(text, language) {
   });
 }
 
-async function apiSendEmail(data) {
-  const res = await fetch(`${API_BASE}/send/email`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return await res.json();
-}
-
-async function apiSendSlack(data) {
-  const res = await fetch(`${API_BASE}/send/slack`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return await res.json();
-}
-
-async function apiShareLinkedIn(data) {
-  const res = await fetch(`${API_BASE}/send/linkedin`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return await res.json();
-}
+// message.type -> backend call; the result is sent back as { success, data }
+const API_ROUTES = {
+  API_TRANSLATE_TEXT: (m) => postJson('/translate-text', { text: m.text, target_language: m.targetLanguage }),
+  API_REWRITE_TONE: (m) => postJson('/rewrite-tone', { text: m.text, tone: m.tone, user_override: m.userOverride || null }),
+  API_TRANSLATE_AUDIO: (m) => apiTranslateAudio(m.audioData, m.mimeType),
+  API_SEND_EMAIL: (m) => postJson('/send/email', m.data),
+  API_SEND_SLACK: (m) => postJson('/send/slack', m.data),
+  API_SHARE_LINKEDIN: (m) => postJson('/send/linkedin', m.data),
+};
 
 function sendToActiveTab(message, fallback, sendResponse) {
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -138,6 +118,9 @@ function sendToActiveTab(message, fallback, sendResponse) {
 // ========== MESSAGE HANDLER ==========
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // Only accept messages from this extension's own pages/content scripts
+  if (sender.id !== chrome.runtime.id) return false;
+
   if (message.type === 'GET_PENDING_ACTION') {
     chrome.storage.local.get('pendingAction', (result) => {
       sendResponse(result.pendingAction || null);
@@ -181,20 +164,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   // ===== API PROXY CALLS =====
-  if (message.type === 'API_TRANSLATE_TEXT') {
-    apiTranslateText(message.text, message.targetLanguage)
-      .then((data) => sendResponse({ success: true, data }))
-      .catch((err) => sendResponse({ success: false, error: err.message }));
-    return true;
-  }
-  if (message.type === 'API_REWRITE_TONE') {
-    apiRewriteTone(message.text, message.tone, message.userOverride)
-      .then((data) => sendResponse({ success: true, data }))
-      .catch((err) => sendResponse({ success: false, error: err.message }));
-    return true;
-  }
-  if (message.type === 'API_TRANSLATE_AUDIO') {
-    apiTranslateAudio(message.audioData, message.mimeType)
+  if (Object.hasOwn(API_ROUTES, message.type)) {
+    API_ROUTES[message.type](message)
       .then((data) => sendResponse({ success: true, data }))
       .catch((err) => sendResponse({ success: false, error: err.message }));
     return true;
@@ -205,46 +176,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch((err) => sendResponse({ success: false, error: err.message }));
     return true;
   }
-  if (message.type === 'API_SEND_EMAIL') {
-    apiSendEmail(message.data)
-      .then((data) => sendResponse({ success: true, data }))
-      .catch((err) => sendResponse({ success: false, error: err.message }));
-    return true;
-  }
-  if (message.type === 'API_SEND_SLACK') {
-    apiSendSlack(message.data)
-      .then((data) => sendResponse({ success: true, data }))
-      .catch((err) => sendResponse({ success: false, error: err.message }));
-    return true;
-  }
-  if (message.type === 'API_SHARE_LINKEDIN') {
-    apiShareLinkedIn(message.data)
-      .then((data) => sendResponse({ success: true, data }))
-      .catch((err) => sendResponse({ success: false, error: err.message }));
-    return true;
-  }
 
   if (message.type === 'DEACTIVATED_FROM_PAGE') { return; }
-
-  // Desktop widget signals it's alive — store flag and notify all tabs
-  if (message.type === 'WIDGET_ALIVE') {
-    chrome.storage.local.set({ widgetAlive: true });
-    chrome.tabs.query({}, (tabs) => {
-      tabs.forEach(t => {
-        try { chrome.tabs.sendMessage(t.id, { type: 'WIDGET_ACTIVE' }); } catch {}
-      });
-    });
-    sendResponse({ ok: true });
-    return true;
-  }
-
-  if (message.type === 'WIDGET_DEAD') {
-    chrome.storage.local.remove('widgetAlive');
-    chrome.tabs.query({}, (tabs) => {
-      tabs.forEach(t => {
-        try { chrome.tabs.sendMessage(t.id, { type: 'WIDGET_INACTIVE' }); } catch {}
-      });
-    });
-    return;
-  }
 });

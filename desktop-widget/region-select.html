@@ -82,21 +82,20 @@
   <div id="size-label"></div>
 
   <script>
-    const { ipcRenderer } = require('electron');
     const selBox = document.getElementById('sel-box');
     const sizeLabel = document.getElementById('size-label');
 
     let lang = 'hi-IN';
     let dragStart = null;
 
-    ipcRenderer.on('init', (_, data) => { lang = data.lang; });
+    window.widget.on('init', (data) => { lang = data.lang; });
 
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') ipcRenderer.send('region-cancelled');
+      if (e.key === 'Escape') window.widget.send('region-cancelled');
     });
 
     document.getElementById('cancel-btn').addEventListener('click', () => {
-      ipcRenderer.send('region-cancelled');
+      window.widget.send('region-cancelled');
     });
 
     document.addEventListener('mousedown', (e) => {
@@ -137,9 +136,9 @@
       dragStart = null;
 
       if (w > 20 && h > 20) {
-        ipcRenderer.send('region-selected', { x, y, w, h, lang });
+        window.widget.send('region-selected', { x, y, w, h, lang });
       } else {
-        ipcRenderer.send('region-cancelled');
+        window.widget.send('region-cancelled');
       }
     });
   </script>
