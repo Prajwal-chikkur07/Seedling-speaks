@@ -37,12 +37,11 @@
   ],
   "host_permissions": [
     "http://127.0.0.1:8001/*",
-    "http://localhost:8001/*",
-    "http://127.0.0.1:27182/*"
+    "http://localhost:8001/*"
   ],
   "web_accessible_resources": [
     {
-      "resources": ["index.html", "assets/*", "icons/*"],
+      "resources": ["icons/*"],
       "matches": ["<all_urls>"]
     }
   ]

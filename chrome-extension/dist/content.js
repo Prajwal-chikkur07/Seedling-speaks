@@ -20,6 +20,11 @@ function sendMsg(msg) {
   });
 }
 
+// Exact host or subdomain match (never substring: "mail.google.com.evil.io")
+function hostIs(host, domain) {
+  return host === domain || host.endsWith('.' + domain);
+}
+
 // ========== STATE ==========
 let isActive = false;
 let selectionPopup = null;
@@ -128,170 +133,6 @@ if (isContextValid()) {
     return false;
   });
 } // end init guard
-
-// ========== WIDGET POLLING — talks to desktop widget at 127.0.0.1:27182 ==========
-// Polling only starts after widget confirms it's alive via chrome.storage
-(function startWidgetPolling() {
-  const WIDGET_URL = 'http://127.0.0.1:27182/pending-action';
-  let clickModeActive = false;
-  let clickHoverFn = null;
-  let clickFn = null;
-  let clickHighlightEl = null;
-  let polling = false;
-
-  function stopClickMode() {
-    clickModeActive = false;
-    document.body.style.cursor = '';
-    if (clickHoverFn) { document.removeEventListener('mouseover', clickHoverFn); clickHoverFn = null; }
-    if (clickFn) { document.removeEventListener('click', clickFn, true); clickFn = null; }
-    if (clickHighlightEl) { clickHighlightEl.style.outline = ''; clickHighlightEl = null; }
-    const banner = document.getElementById('vt-widget-click-banner');
-    if (banner) banner.remove();
-  }
-
-  async function pollWithBackoff() {
-    if (!polling) return;
-    try {
-      const res = await fetch(WIDGET_URL, { method: 'GET', signal: AbortSignal.timeout(400) });
-      if (res.ok) {
-        const action = await res.json();
-        if (action) await handleAction(action);
-        setTimeout(pollWithBackoff, 500);
-      } else {
-        setTimeout(pollWithBackoff, 1000);
-      }
-    } catch {
-      // Widget stopped — stop polling silently
-      polling = false;
-      chrome.storage.local.remove('widgetAlive');
-    }
-  }
-
-  function startPolling() {
-    if (polling) return;
-    polling = true;
-    pollWithBackoff();
-  }
-
-  // Check storage on load — if widget was alive in this session, start polling
-  chrome.storage.local.get('widgetAlive', (r) => {
-    if (r.widgetAlive) startPolling();
-  });
-
-  // Listen for widget activation message
-  chrome.runtime.onMessage.addListener((msg) => {
-    if (msg.type === 'WIDGET_ACTIVE') startPolling();
-    if (msg.type === 'WIDGET_INACTIVE') { polling = false; }
-  });
-
-  // Extract action handling into its own function
-  async function handleAction(action) {
-    const lang = action.lang || targetLanguage || 'hi-IN';
-
-    if (action.type === 'TRANSLATE_ALL_PAGE') {
-      const prevLang = targetLanguage;
-      targetLanguage = lang;
-      translateAllVisibleText();
-      targetLanguage = prevLang;
-
-    } else if (action.type === 'TRANSLATE_SELECTION') {
-      const sel = window.getSelection();
-      const text = sel?.toString().trim();
-      if (text) {
-        try { translateAndShowInline(text, sel.getRangeAt(0)); }
-        catch { translateAndShowInline(text, null); }
-      } else {
-        showToast('Select some text first, then click Selection.');
-      }
-
-    } else if (action.type === 'TOGGLE_CLICK_MODE') {
-      if (clickModeActive) {
-        stopClickMode();
-      } else {
-        clickModeActive = true;
-        document.body.style.cursor = 'crosshair';
-        let banner = document.getElementById('vt-widget-click-banner');
-        if (!banner) {
-          banner = document.createElement('div');
-          banner.id = 'vt-widget-click-banner';
-          banner.style.cssText = [
-            'position:fixed', 'bottom:80px', 'left:50%', 'transform:translateX(-50%)',
-            'background:rgba(10,12,20,0.9)', 'backdrop-filter:blur(12px)',
-            'border:1px solid rgba(99,102,241,0.5)', 'border-radius:12px',
-            'padding:8px 16px', 'font-size:12px', 'font-weight:600',
-            'color:rgba(255,255,255,0.9)', 'z-index:2147483647',
-            'display:flex', 'align-items:center', 'gap:8px',
-            'box-shadow:0 8px 24px rgba(0,0,0,0.4)',
-            'font-family:-apple-system,BlinkMacSystemFont,sans-serif',
-          ].join(';');
-          banner.innerHTML = `
-            <span style="width:7px;height:7px;border-radius:50%;background:#818cf8;box-shadow:0 0 6px #818cf8;flex-shrink:0;animation:vtPulse 1s ease-in-out infinite;"></span>
-            Click any text to translate
-            <button id="vt-widget-click-off" style="margin-left:6px;background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.3);border-radius:6px;color:#f87171;font-size:10px;font-weight:700;padding:2px 8px;cursor:pointer;">✕ Stop</button>
-          `;
-          if (!document.getElementById('vt-widget-style')) {
-            const style = document.createElement('style');
-            style.id = 'vt-widget-style';
-            style.textContent = '@keyframes vtPulse{0%,100%{opacity:1}50%{opacity:0.3}}';
-            document.head.appendChild(style);
-          }
-          document.body.appendChild(banner);
-          document.getElementById('vt-widget-click-off').addEventListener('click', stopClickMode);
-        }
-
-        clickHoverFn = (e) => {
-          const el = e.target;
-          if (el.closest('#vt-widget-click-banner') || el.closest('#vt-popup-panel') || el.closest('#vt-floating-icon')) return;
-          if (clickHighlightEl && clickHighlightEl !== el) clickHighlightEl.style.outline = '';
-          clickHighlightEl = el;
-          el.style.outline = '2px solid rgba(99,102,241,0.8)';
-        };
-
-        clickFn = async (e) => {
-          const el = e.target;
-          if (el.closest('#vt-widget-click-banner') || el.closest('#vt-popup-panel') || el.closest('#vt-floating-icon')) return;
-          if (el.classList.contains('vt-undo-btn')) return;
-          e.preventDefault(); e.stopPropagation();
-          if (clickHighlightEl) { clickHighlightEl.style.outline = ''; clickHighlightEl = null; }
-          const text = (el.innerText || el.textContent || '').replace(/↩/g, '').trim();
-          if (!text || text.length < 2) return;
-          el.style.opacity = '0.5';
-          try {
-            const prevLang = targetLanguage;
-            targetLanguage = lang;
-            const res = await sendMsg({ type: 'API_TRANSLATE_TEXT', text, targetLanguage: lang });
-            targetLanguage = prevLang;
-            el.style.opacity = '';
-            if (res?.success) {
-              const translated = res.data.translated_text || text;
-              const orig = el.innerHTML;
-              el.setAttribute('data-vt-original', orig);
-              el.textContent = translated;
-              const btn = document.createElement('button');
-              btn.className = 'vt-undo-btn';
-              btn.textContent = '↩';
-              btn.title = 'Restore original';
-              btn.onclick = (ev) => { ev.stopPropagation(); el.innerHTML = orig; el.removeAttribute('data-vt-original'); };
-              el.appendChild(btn);
-            }
-          } catch { el.style.opacity = ''; }
-        };
-
-        document.addEventListener('mouseover', clickHoverFn);
-        document.addEventListener('click', clickFn, true);
-      }
-
-    } else if (action.type === 'STOP_TRANSLATION') {
-      stopTranslationFlag = true;
-      stopClickMode();
-      removeAllTranslationOverlays();
-      showToast('Page restored.');
-    }
-  }
-
-  // Polling starts only when WIDGET_ACTIVE message is received from background.js
-  // No auto-start — prevents 404 spam when widget isn't running
-})();
 
 // ========== FLOATING ICON ==========
 function createFloatingIcon() {
@@ -553,7 +394,7 @@ function renderMicOutput() {
     ${extToneLoading
       ? `<div style="flex:1;background:#fff;border:1px solid #ececec;border-radius:10px;display:flex;align-items:center;justify-content:center;gap:8px;color:#9ca3af;font-size:12px;"><div class="vt-spinner"></div>Rewriting…</div>`
       : `<div style="position:relative;flex:1;display:flex;flex-direction:column;">
-          <textarea id="vt-ext-output" style="flex:1;width:100%;padding:10px 12px;padding-right:60px;background:#fff;border:1px solid #ececec;border-radius:10px;color:#1a1a1a;font-size:13px;font-weight:400;line-height:1.8;outline:none;resize:none;box-shadow:none;" onfocus="this.style.borderColor='#1a1a1a'" onblur="this.style.borderColor='#ececec'">${escapeHtml(displayText)}</textarea>
+          <textarea id="vt-ext-output" style="flex:1;width:100%;padding:10px 12px;padding-right:60px;background:#fff;border:1px solid #ececec;border-radius:10px;color:#1a1a1a;font-size:13px;font-weight:400;line-height:1.8;outline:none;resize:none;box-shadow:none;" data-focus-border="1">${escapeHtml(displayText)}</textarea>
           <div style="position:absolute;top:6px;right:6px;display:flex;gap:3px;">
             <button id="vt-ext-copy-out" title="Copy" style="width:24px;height:24px;background:rgba(255,255,255,0.9);border:1px solid #e5e7eb;border-radius:6px;color:#9ca3af;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;">
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
@@ -602,6 +443,7 @@ let extMicStream = null;
 let extMicTimeSec = 0;
 let extMicTimer = null;
 let extMicWaveInterval = null;
+let extMicAudioCtx = null;
 let extMicLoading = false;
 let extToneLoading = false;
 let extRawText = '';      // transcript from /api/translate-audio
@@ -869,6 +711,10 @@ function wireTabEvents() {
 
   const outTA = popupPanel.querySelector('#vt-ext-output');
   if (outTA) outTA.oninput = e => { if (extToneText) extToneText = e.target.value; else extRawText = e.target.value; };
+  if (outTA && outTA.dataset.focusBorder) {
+    outTA.addEventListener('focus', () => { outTA.style.borderColor = '#1a1a1a'; });
+    outTA.addEventListener('blur', () => { outTA.style.borderColor = '#ececec'; });
+  }
 
   const sendBoxBtn = popupPanel.querySelector('#vt-ext-send-box');
   if (sendBoxBtn) sendBoxBtn.onclick = () => {
@@ -1037,6 +883,7 @@ async function extStartMic() {
     // Waveform animation
     try {
       const ctx = new AudioContext();
+      extMicAudioCtx = ctx;
       const src = ctx.createMediaStreamSource(extMicStream);
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 64;
@@ -1060,6 +907,7 @@ async function extStartMic() {
 async function extStopMic() {
   if (extMicTimer) { clearInterval(extMicTimer); extMicTimer = null; }
   if (extMicWaveInterval) { clearInterval(extMicWaveInterval); extMicWaveInterval = null; }
+  if (extMicAudioCtx) { extMicAudioCtx.close().catch(() => {}); extMicAudioCtx = null; }
   if (!extMicRecorder || extMicRecorder.state === 'inactive') return;
   extMicRecording = false;
   extMicLoading = true;
@@ -1075,11 +923,15 @@ async function extStopMic() {
   if (blob.size < 500) { extMicLoading = false; renderPanel(); wireTabEvents(); return; }
 
   try {
-    const formData = new FormData();
-    formData.append('file', blob, 'recording.webm');
-    const res = await fetch('http://127.0.0.1:8001/api/translate-audio', { method: 'POST', body: formData });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const data = await res.json();
+    const audioData = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+    const res = await sendMsg({ type: 'API_TRANSLATE_AUDIO', audioData, mimeType: 'audio/webm' });
+    if (!res?.success) throw new Error(res?.error || 'request failed');
+    const data = res.data;
     extRawText = data.transcript || '';
     extToneText = '';
     extSelectedTone = null;
@@ -1121,18 +973,9 @@ async function extApplyTone(tone) {
       return;
     }
 
-    const r = await fetch('http://127.0.0.1:8001/api/rewrite-tone', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, tone: backendTone, user_override: userOverride }),
-    });
-
-    if (!r.ok) {
-      const err = await r.json().catch(() => ({}));
-      throw new Error(err.detail || `HTTP ${r.status}`);
-    }
-
-    const d = await r.json();
+    const r = await sendMsg({ type: 'API_REWRITE_TONE', text, tone: backendTone, userOverride });
+    if (!r?.success) throw new Error(r?.error || 'request failed');
+    const d = r.data;
     extToneText = d.rewritten_text || text;
   } catch (e) {
     showToast('Tone rewrite failed: ' + e.message);
@@ -1569,7 +1412,7 @@ function insertTextIntoActive(text) {
   const host = window.location.hostname;
 
   // ── Gmail ──────────────────────────────────────────────────────────────────
-  if (host.includes('mail.google.com')) {
+  if (hostIs(host, 'mail.google.com')) {
     const gmailBody =
       document.querySelector('div[aria-label="Message Body"][contenteditable="true"]') ||
       document.querySelector('div[g_editable="true"][contenteditable="true"]') ||
@@ -1639,7 +1482,7 @@ function insertTextIntoActive(text) {
   }
 
   // ── Slack Web ──────────────────────────────────────────────────────────────
-  if (host.includes('slack.com') || host.includes('app.slack.com')) {
+  if (hostIs(host, 'slack.com')) {
     const slackInput =
       document.querySelector('[data-qa="message_input"] div[contenteditable="true"]') ||
       document.querySelector('[data-qa="message_input"] .p-rich_text_input') ||
@@ -1678,7 +1521,7 @@ function insertTextIntoActive(text) {
   }
 
   // ── WhatsApp Web ───────────────────────────────────────────────────────────
-  if (host.includes('web.whatsapp.com') || host.includes('whatsapp.com')) {
+  if (hostIs(host, 'whatsapp.com')) {
     const waInput =
       document.querySelector('div[contenteditable="true"][data-tab="10"]') ||
       document.querySelector('div[contenteditable="true"][data-tab="1"]') ||
@@ -1694,7 +1537,7 @@ function insertTextIntoActive(text) {
   }
 
   // ── LinkedIn ───────────────────────────────────────────────────────────────
-  if (host.includes('linkedin.com')) {
+  if (hostIs(host, 'linkedin.com')) {
     // Priority order of selectors — modal dialog first, then page-level
     const liSelectors = [
       // Post creation modal (Quill editor)
@@ -1825,7 +1668,7 @@ function escapeHtml(str) {
 
 function esc(str) {
   if (!str) return '';
-  return str.replace(/'/g, '&#39;').replace(/"/g, '&quot;');
+  return String(str).replace(/&/g, '&amp;').replace(/'/g, '&#39;').replace(/"/g, '&quot;');
 }
 
 function showToast(msg) {
@@ -1837,95 +1680,6 @@ function showToast(msg) {
   document.body.appendChild(toast);
   setTimeout(() => { toast.style.opacity = '0'; toast.style.transform = 'translateY(8px)'; setTimeout(() => toast.remove(), 300); }, 2500);
 }
-
-// ========== WIDGET FILL BRIDGE ==========
-const WIDGET_FILL_API = 'http://127.0.0.1:8001/api/widget-fill';
-let _fillPollInterval = null;
-
-function startWidgetFillPolling() {
-  if (_fillPollInterval) return;
-  // Only poll on Gmail and Slack
-  const host = window.location.hostname;
-  const isGmail = host.includes('mail.google.com');
-  const isSlack = host.includes('slack.com');
-  if (!isGmail && !isSlack) return;
-
-  _fillPollInterval = setInterval(async () => {
-    try {
-      const res = await fetch(WIDGET_FILL_API, { method: 'GET' });
-      if (!res.ok) return;
-      const data = await res.json();
-      if (!data.pending) return;
-
-      if (isGmail) {
-        fillGmailCompose(data.subject || '', data.body || '');
-      } else if (isSlack) {
-        fillSlackCompose(data.body || data.subject || '');
-      }
-    } catch {}
-  }, 800);
-}
-
-function fillGmailCompose(subject, body) {
-  // Gmail subject input — try multiple selectors
-  const subjectEl = document.querySelector(
-    'input[name="subjectbox"], ' +
-    'input[placeholder="Subject"], ' +
-    'input[data-hm="subject"], ' +
-    'td.aoD.hl input, ' +
-    '.aoT'
-  );
-
-  if (subjectEl && subject) {
-    subjectEl.focus();
-    // Native input value setter to bypass React's synthetic events
-    const nativeInputSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-    nativeInputSetter.call(subjectEl, subject);
-    subjectEl.dispatchEvent(new Event('input', { bubbles: true }));
-    subjectEl.dispatchEvent(new Event('change', { bubbles: true }));
-  }
-
-  // Gmail body — contenteditable div, wait a tick for compose to be ready
-  setTimeout(() => {
-    const bodyEl = document.querySelector(
-      'div[aria-label="Message Body"], ' +
-      'div[g_editable="true"], ' +
-      'div.Am.Al.editable[contenteditable="true"], ' +
-      'div[contenteditable="true"][role="textbox"]'
-    );
-    if (bodyEl && body) {
-      bodyEl.focus();
-      // Clear existing content and insert
-      bodyEl.innerHTML = '';
-      document.execCommand('insertText', false, body);
-      bodyEl.dispatchEvent(new InputEvent('input', { bubbles: true }));
-    }
-    showToast('✓ Email filled from widget');
-  }, 200);
-}
-
-function fillSlackCompose(text) {
-  // Slack message input — contenteditable div
-  const slackInput = document.querySelector(
-    '[data-qa="message_input"] [contenteditable="true"], .ql-editor[contenteditable="true"], [aria-label="Message"] [contenteditable="true"]'
-  );
-  if (slackInput) {
-    slackInput.focus();
-    document.execCommand('selectAll', false, null);
-    document.execCommand('insertText', false, text);
-    slackInput.dispatchEvent(new InputEvent('input', { bubbles: true }));
-    showToast('✓ Message filled from widget');
-  } else {
-    insertTextIntoActive(text);
-    showToast('✓ Text inserted from widget');
-  }
-}
-
-// Start polling when the page loads
-if (isContextValid()) {
-  startWidgetFillPolling();
-}
-
 
 // ========== LIVE CHAT TRANSLATION ==========
 // Flow:
@@ -2032,7 +1786,7 @@ if (isContextValid()) {
   function getSite() {
     const host = window.location.hostname;
     for (const key of Object.keys(SITES)) {
-      if (host.includes(key)) return SITES[key];
+      if (hostIs(host, key)) return SITES[key];
     }
     return null;
   }
