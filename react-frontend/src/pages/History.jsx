@@ -4,12 +4,7 @@ import { useApp } from '../context/AppContext';
 import { Clock, Trash2, RotateCcw, X, Search, Download, Star, Tag, Plus } from 'lucide-react';
 import * as api from '../services/api';
 import { getLabels } from '../services/uiLabels';
-
-const LANG_NAMES = {
-  'hi-IN': 'Hindi', 'bn-IN': 'Bengali', 'ta-IN': 'Tamil', 'te-IN': 'Telugu',
-  'ml-IN': 'Malayalam', 'mr-IN': 'Marathi', 'gu-IN': 'Gujarati',
-  'kn-IN': 'Kannada', 'pa-IN': 'Punjabi', 'or-IN': 'Odia',
-};
+import { LANG_LABELS } from '../constants/languages';
 
 function ConfidencePill({ score }) {
   if (score == null) return null;
@@ -197,7 +192,7 @@ export default function History() {
                       const lc = langColors[entry.lang] || { bg: '#F0F4F8', color: '#5A6478' };
                       return (
                         <span style={{ borderRadius: 'var(--r-pill)', padding: '4px 12px', fontSize: 12, fontWeight: 700, background: lc.bg, color: lc.color }}>
-                          {LANG_NAMES[entry.lang] || entry.lang || 'Unknown'}
+                          {LANG_LABELS[entry.lang] || entry.lang || 'Unknown'}
                         </span>
                       );
                     })()}

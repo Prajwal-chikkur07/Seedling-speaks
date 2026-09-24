@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Film, Download, Trash2, Play, ArrowLeft, Clock } from 'lucide-react';
+import { VIDEO_LANG_LABELS } from '../constants/languages';
 
 const HISTORY_KEY = 'vt_video_history';
 
@@ -8,12 +9,6 @@ function loadHistory() {
   try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); } catch { return []; }
 }
 function saveHistory(h) { try { localStorage.setItem(HISTORY_KEY, JSON.stringify(h)); } catch { /* ignore */ } }  
-
-const LANG_NAMES = {
-  'hi-IN': 'Hindi', 'en-IN': 'English', 'kn-IN': 'Kannada',
-  'ta-IN': 'Tamil', 'te-IN': 'Telugu', 'ml-IN': 'Malayalam',
-  'bn-IN': 'Bengali', 'mr-IN': 'Marathi', 'gu-IN': 'Gujarati', 'pa-IN': 'Punjabi',
-};
 
 export default function VideoHistory() {
   const navigate = useNavigate();
@@ -101,11 +96,11 @@ export default function VideoHistory() {
                   <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <p style={{ fontSize: '0.88rem', fontWeight: 600, color: 'var(--text-ink)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', margin: 0 }}>
-                        {item.filename || `Video · ${LANG_NAMES[item.targetLang] || item.targetLang}`}
+                        {item.filename || `Video · ${VIDEO_LANG_LABELS[item.targetLang] || item.targetLang}`}
                       </p>
                       <p style={{ fontSize: '11px', color: 'var(--text-faded)', marginTop: 6, display: 'flex', alignItems: 'center', gap: 8, margin: '6px 0 0' }}>
                         <span style={{ background: '#EAF4ED', color: '#1A5C35', borderRadius: 'var(--r-pill)', padding: '3px 10px', fontSize: '11px', fontWeight: 700 }}>
-                          {LANG_NAMES[item.targetLang] || item.targetLang}
+                          {VIDEO_LANG_LABELS[item.targetLang] || item.targetLang}
                         </span>
                         · {fmt(item.timestamp)}
                       </p>

@@ -1,4 +1,5 @@
-const WIDGET_URL = 'http://127.0.0.1:27182';
+const WIDGET_PORT = 27182;
+export const WIDGET_URL = `http://127.0.0.1:${WIDGET_PORT}`;
 const FAILURE_COOLDOWN_MS = 60000;
 
 let widgetCooldownUntil = 0;
@@ -26,6 +27,7 @@ export async function getWidgetStatus({ force = false, timeoutMs = 800 } = {}) {
 export async function toggleWidgetEnabled({ enabled, timeoutMs = 1500 } = {}) {
   try {
     const res = await fetch(`${WIDGET_URL}${enabled ? '/enable' : '/disable'}`, {
+      method: 'POST',
       signal: AbortSignal.timeout(timeoutMs),
     });
     if (!res.ok) throw new Error(`Widget toggle failed: ${res.status}`);
@@ -39,7 +41,7 @@ export async function toggleWidgetEnabled({ enabled, timeoutMs = 1500 } = {}) {
 
 export async function toggleWidgetPower({ timeoutMs = 1500 } = {}) {
   try {
-    const res = await fetch(`${WIDGET_URL}/toggle`, { signal: AbortSignal.timeout(timeoutMs) });
+    const res = await fetch(`${WIDGET_URL}/toggle`, { method: 'POST', signal: AbortSignal.timeout(timeoutMs) });
     if (!res.ok) throw new Error(`Widget toggle failed: ${res.status}`);
     widgetCooldownUntil = 0;
     return await res.json();

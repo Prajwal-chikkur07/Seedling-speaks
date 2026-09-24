@@ -1,5 +1,7 @@
+import { useEffect } from 'react';
 import { ClerkProvider, useAuth } from '@clerk/clerk-react';
 import { Routes, Route, Navigate } from 'react-router-dom';
+import { setTokenGetter } from './services/api';
 import { AppProvider } from './context/AppContext';
 import AppShellLayout from './layout/AppShell';
 import SplashScreen from './components/SplashScreen';
@@ -157,11 +159,24 @@ function AppRoutes() {
 }
 
 /**
+ * AuthTokenBridge — Lets the API client fetch a fresh Clerk token per request.
+ * Cleared on sign-out so no stale token is sent.
+ */
+function AuthTokenBridge() {
+  const { isSignedIn, getToken } = useAuth();
+  useEffect(() => {
+    setTokenGetter(isSignedIn ? getToken : null);
+  }, [isSignedIn, getToken]);
+  return null;
+}
+
+/**
  * AppWithProviders — Wraps entire app with context providers.
  */
 function AppWithProviders() {
   return (
     <AppProvider>
+      <AuthTokenBridge />
       <AppRoutes />
     </AppProvider>
   );
@@ -170,9 +185,6 @@ function AppWithProviders() {
 export default function App() {
   // Get Clerk publishable key from environment
   const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
-
-  console.log('Clerk Key:', clerkPubKey ? '✓ Present' : '✗ Missing');
-  console.log('Clerk Key Value:', clerkPubKey);
 
   if (!clerkPubKey) {
     return (

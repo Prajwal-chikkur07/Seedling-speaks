@@ -1,36 +1,49 @@
 import axios from 'axios';
 import { toast } from '../components/Toast';
 
+export const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+
 const API = axios.create({
-  baseURL: `${import.meta.env.VITE_API_URL || 'http://127.0.0.1:8001'}/api`,
+  baseURL: `${API_BASE_URL}/api`,
   timeout: 120000,
 });
+
+export default API;
 
 // ── Retry config ──────────────────────────────────────────────────────────────
 const RETRY_COUNT   = 2;          // retry up to 2 times (3 total attempts)
 const RETRY_DELAY   = 1000;       // 1s base delay, doubles each attempt
 const NO_RETRY_CODES = [400, 401, 403, 404, 422]; // don't retry client errors
+const RETRY_METHODS = ['get', 'head'];
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-// ── Auth token storage ───────────────────────────────────────────────────────
-let clerkToken = null;
+// ── Auth token ───────────────────────────────────────────────────────────────
+// Clerk session tokens expire after ~60s, so we keep Clerk's getToken function
+// and ask it for a fresh token on every request instead of caching a token.
+let tokenGetter = null;
 
-export const setAuthToken = (token) => {
-  clerkToken = token;
-  if (token) {
-    API.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-  } else {
-    delete API.defaults.headers.common['Authorization'];
-  }
+export const setTokenGetter = (getter) => {
+  tokenGetter = getter || null;
 };
 
+async function getAuthToken() {
+  if (!tokenGetter) return null;
+  try {
+    return (await tokenGetter()) || null;
+  } catch {
+    return null;
+  }
+}
+
 function shouldRetry(error) {
-  if (!error.response) return true; // network error — always retry
-  if (NO_RETRY_CODES.includes(error.response.status)) return false;
+  const config = error.config;
+  // Only retry idempotent requests unless the caller opted in with `retry: true`
+  if (!config.retry && !RETRY_METHODS.includes((config.method || 'get').toLowerCase())) return false;
   // Never retry health checks — they flood the console when backend is down
-  if (error.config?.url?.includes('/health')) return false;
-  return true;
+  if (config.url?.includes('/health')) return false;
+  if (!error.response) return true; // network error
+  return !NO_RETRY_CODES.includes(error.response.status);
 }
 
 function friendlyMessage(error) {
@@ -45,20 +58,21 @@ function friendlyMessage(error) {
   if (status === 500) return 'Server error — try again in a moment';
   if (status === 401) return 'Session expired — please log in again';
   if (status === 429) return 'Too many requests — slow down a bit';
-  return detail || error.message || 'Something went wrong';
+  return error.message || 'Something went wrong';
 }
 
-// ── Request interceptor: attach auth token ───────────────────────────────────
-API.interceptors.request.use((config) => {
-  if (clerkToken) {
-    config.headers.Authorization = `Bearer ${clerkToken}`;
+// ── Request interceptor: attach a fresh auth token ───────────────────────────
+API.interceptors.request.use(async (config) => {
+  const token = await getAuthToken();
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
   }
-  // Track retry count on config
   config._retryCount = config._retryCount ?? 0;
   return config;
 });
 
 // ── Response interceptor: retry + toast errors ───────────────────────────────
+// Errors are toasted here; callers should not show their own error toast.
 API.interceptors.response.use(
   (response) => response,
   async (error) => {
@@ -68,20 +82,16 @@ API.interceptors.response.use(
       return Promise.reject(error);
     }
 
-    // Retry logic
     if (shouldRetry(error) && config._retryCount < RETRY_COUNT) {
       config._retryCount += 1;
-      const delay = RETRY_DELAY * config._retryCount;
-      await sleep(delay);
+      await sleep(RETRY_DELAY * config._retryCount);
       return API(config);
     }
 
-    // All retries exhausted — show toast
-    const msg = friendlyMessage(error);
-    // Don't toast auth errors (handled by AuthPage itself)
-    const isAuthEndpoint = config.url?.includes('/auth/');
-    if (!isAuthEndpoint) {
-      toast.error(msg);
+    // Auth errors are handled by AuthPage; health checks fail silently
+    const silent = config.url?.includes('/auth/') || config.url?.includes('/health');
+    if (!silent) {
+      toast.error(friendlyMessage(error));
     }
 
     return Promise.reject(error);
@@ -173,7 +183,7 @@ export const textToSpeech = async (text, language, speaker = 'meera', useSarvam 
   return data;
 };
 
-export const sendEmail = async ({ text, toEmail, subject, tone, language, smtpUsername, smtpPassword }) => {
+export const sendEmail = async ({ text, toEmail, subject, tone, language }) => {
   const { data } = await API.post('/send/email', {
     text,
     to_email: toEmail,
@@ -181,8 +191,6 @@ export const sendEmail = async ({ text, toEmail, subject, tone, language, smtpUs
     tone,
     language,
     use_sendgrid: false,
-    smtp_username: smtpUsername || undefined,
-    smtp_password: smtpPassword || undefined,
   });
   return data;
 };
@@ -237,7 +245,8 @@ export const exportHistory = async (entries, format = 'csv') => {
   a.href = url;
   a.download = format === 'csv' ? 'transcripts.csv' : 'transcripts.txt';
   a.click();
-  URL.revokeObjectURL(url);
+  // Revoking synchronously can cancel the download in some browsers
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 };
 
 export const summarizeTranscript = async (text) => {
@@ -393,6 +402,12 @@ export const generateSubtitles = async ({ video_id, target_language }) => {
 
 export const getVideoStatus = async (videoId) => {
   const { data } = await API.get(`/video/status/${videoId}`);
+  return data;
+};
+
+// kind: 'download' (mp4) | 'srt' | 'vtt'. Fetched through axios so the auth header is sent.
+export const getVideoAsset = async (videoId, kind) => {
+  const { data } = await API.get(`/video/${kind}/${videoId}`, { responseType: 'blob', timeout: 300000 });
   return data;
 };
 

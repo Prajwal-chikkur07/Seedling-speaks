@@ -10,14 +10,27 @@ export default function RecordingControls() {
   const streamRef = useRef(null);
   const fileInputRef = useRef(null);
   const animFrameRef = useRef(null);
-  const analyserRef = useRef(null);
+  const audioCtxRef = useRef(null);
   const [recordingTime, setRecordingTime] = useState(0);
   const [bars, setBars] = useState(Array(36).fill(3));
 
   const stopMediaStream = useCallback(() => {
     if (streamRef.current) { streamRef.current.getTracks().forEach((t) => t.stop()); streamRef.current = null; }
-    if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+    if (animFrameRef.current) { cancelAnimationFrame(animFrameRef.current); animFrameRef.current = null; }
+    if (audioCtxRef.current) { audioCtxRef.current.close().catch(() => {}); audioCtxRef.current = null; }
   }, []);
+
+  // Release the mic if the component unmounts mid-recording
+  useEffect(() => () => {
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state !== 'inactive') {
+      recorder.onstop = null;
+      recorder.stop();
+    }
+    mediaRecorderRef.current = null;
+    stopMediaStream();
+    setField('isRecording', false);
+  }, [setField, stopMediaStream]);
 
   useEffect(() => {
     let interval;
@@ -33,11 +46,11 @@ export default function RecordingControls() {
 
   const startWaveform = useCallback((stream) => {
     const ctx = new AudioContext();
+    audioCtxRef.current = ctx;
     const src = ctx.createMediaStreamSource(stream);
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 128;
     src.connect(analyser);
-    analyserRef.current = analyser;
     const data = new Uint8Array(analyser.frequencyBinCount);
     const tick = () => {
       analyser.getByteFrequencyData(data);
@@ -68,9 +81,10 @@ export default function RecordingControls() {
       recorder.start();
       setField('isRecording', true);
     } catch {
+      stopMediaStream();
       showError('Microphone permission denied.');
     }
-  }, [setField, showError, startWaveform]);
+  }, [setField, showError, startWaveform, stopMediaStream]);
 
   const stopRecordingAndProcess = useCallback(async () => {
     return new Promise((resolve) => {
@@ -85,16 +99,15 @@ export default function RecordingControls() {
           setLoading('Transcribing...');
           const result = await api.translateAudioFromBlob(blob);
           setFields({ englishText: result.transcript, nativeTranscript: result.native_transcript || '', confidenceScore: result.confidence ?? null });
-          setLoading(null);
-        } catch (err) {
-          showError(err.response?.data?.detail || err.message);
-          setLoading(null);
+        } catch {
+          // error toast is shown by the API client
         }
+        setLoading(null);
         resolve();
       };
       recorder.stop();
     });
-  }, [setField, setFields, setLoading, showError, stopMediaStream]);
+  }, [setField, setFields, setLoading, stopMediaStream]);
 
   const handleFileUpload = async (e) => {
     const file = e.target.files[0];
@@ -104,12 +117,11 @@ export default function RecordingControls() {
       clearAll();
       setLoading('Transcribing audio file...');
       const result = await api.translateAudioFromBlob(file);
-      setFields({ englishText: result.transcript, confidenceScore: result.confidence ?? null });
-      setLoading(null);
-    } catch (err) {
-      showError(err.response?.data?.detail || err.message);
-      setLoading(null);
+      setFields({ englishText: result.transcript, nativeTranscript: result.native_transcript || '', confidenceScore: result.confidence ?? null });
+    } catch {
+      // error toast is shown by the API client
     }
+    setLoading(null);
   };
 
   const handleMainAction = useCallback(async () => {

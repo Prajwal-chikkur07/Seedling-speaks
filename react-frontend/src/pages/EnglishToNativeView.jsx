@@ -7,12 +7,7 @@ import {
 import * as api from '../services/api';
 import { getLabels } from '../services/uiLabels';
 import { useSpeech } from '../hooks/useSpeech';
-
-const LANG_LABELS = {
-  'hi-IN': 'Hindi', 'bn-IN': 'Bengali', 'ta-IN': 'Tamil', 'te-IN': 'Telugu',
-  'ml-IN': 'Malayalam', 'mr-IN': 'Marathi', 'gu-IN': 'Gujarati',
-  'kn-IN': 'Kannada', 'pa-IN': 'Punjabi', 'or-IN': 'Odia',
-};
+import { LANG_LABELS } from '../constants/languages';
 
 const LANG_DOT_COLORS = {
   'hi-IN': '#f97316', 'bn-IN': '#8b5cf6', 'ta-IN': '#ec4899', 'te-IN': '#06b6d4',
@@ -22,7 +17,7 @@ const LANG_DOT_COLORS = {
 
 export default function EnglishToNativeView() {
   const { user } = useUser();
-  const { state, setField, setFields, showError, TARGET_LANGUAGES } = useApp();
+  const { state, setField, setFields, TARGET_LANGUAGES } = useApp();
   const L = getLabels(state.uiLanguage);
   const [isTranslating, setIsTranslating] = useState(false);
   const { isPlaying, speak } = useSpeech();
@@ -32,12 +27,12 @@ export default function EnglishToNativeView() {
     try {
       const translated = await api.translateText(text, lang, user?.id || null);
       setFields({ nativeTranslation: translated, rewrittenText: '' });
-    } catch (err) {
-      showError(err.response?.data?.detail || 'Translation error');
+    } catch {
+      // error toast is shown by the API client
     } finally {
       setIsTranslating(false);
     }
-  }, [setFields, showError, user?.id]);
+  }, [setFields, user?.id]);
 
   const handleTranslateClick = () => { doTranslate(state.englishText, state.selectedLanguage); };
   const handleLangChange = (lang) => {

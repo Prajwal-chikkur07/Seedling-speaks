@@ -2,18 +2,21 @@ import { useState, useRef, useEffect } from 'react';
 import { Upload, Languages, Loader2, Download, X, Film, CheckCircle, AlertCircle, ChevronDown, Subtitles, FileText } from 'lucide-react';
 import * as api from '../services/api';
 import { useApp } from '../context/AppContext';
-
-const LANGUAGES = {
-  'Hindi': 'hi-IN', 'English': 'en-IN', 'Kannada': 'kn-IN',
-  'Tamil': 'ta-IN', 'Telugu': 'te-IN', 'Malayalam': 'ml-IN',
-  'Bengali': 'bn-IN', 'Marathi': 'mr-IN', 'Gujarati': 'gu-IN', 'Punjabi': 'pa-IN',
-};
-
-function getLangName(code) {
-  return Object.entries(LANGUAGES).find(([, v]) => v === code)?.[0] || code;
-}
+import { VIDEO_LANG_LABELS } from '../constants/languages';
 
 const STEPS = ['Upload', 'Configure', 'Processing', 'Done'];
+const POLL_MS = 4000;
+const POLL_MAX_MS = 15 * 60 * 1000;
+const POLL_MAX_FAILURES = 3;
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
 
 export default function VideoTranslate() {
   const { state } = useApp();
@@ -27,10 +30,23 @@ export default function VideoTranslate() {
   const [uploading, setUploading] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [progress, setProgress] = useState('Uploading video…');
+  const [videoBlobUrl, setVideoBlobUrl] = useState(null);
+  const [vttBlobUrl, setVttBlobUrl] = useState(null);
   const fileInputRef = useRef(null);
   const pollRef = useRef(null);
+  const pollGenRef = useRef(0);
 
-  useEffect(() => () => clearInterval(pollRef.current), []);
+  const stopPolling = () => {
+    pollGenRef.current += 1; // ignore responses from polls already in flight
+    clearTimeout(pollRef.current);
+  };
+
+  useEffect(() => () => {
+    pollGenRef.current += 1;
+    clearTimeout(pollRef.current);
+  }, []);
+
+  useEffect(() => () => { if (previewUrl) URL.revokeObjectURL(previewUrl); }, [previewUrl]);
 
   const SUPPORTED_TYPES = ['video/mp4', 'video/quicktime', 'video/x-msvideo', 'video/webm', 'video/x-matroska'];
 
@@ -45,28 +61,43 @@ export default function VideoTranslate() {
     setStep(1);
   };
 
+  // setTimeout chain so a slow status request never overlaps the next one
   const startPolling = (vid) => {
-    clearInterval(pollRef.current);
-    pollRef.current = setInterval(async () => {
+    stopPolling();
+    const gen = pollGenRef.current;
+    const startedAt = Date.now();
+    let failures = 0;
+    const fail = (msg) => { setError(msg); setStep(1); };
+    const poll = async () => {
       try {
         const status = await api.getVideoStatus(vid);
+        if (gen !== pollGenRef.current) return;
+        failures = 0;
         if (status.status === 'done') {
-          clearInterval(pollRef.current);
           setResult(status);
           setStep(3);
-        } else if (status.status === 'error') {
-          clearInterval(pollRef.current);
-          setError(status.error || 'Processing failed.');
-          setStep(1);
-        } else {
-          setProgress('Generating subtitles… this may take a few minutes');
+          return;
         }
+        if (status.status === 'error') {
+          fail(status.error || 'Processing failed.');
+          return;
+        }
+        setProgress('Generating subtitles… this may take a few minutes');
       } catch {
-        clearInterval(pollRef.current);
-        setError('Lost connection while processing.');
-        setStep(1);
+        if (gen !== pollGenRef.current) return;
+        failures += 1;
+        if (failures >= POLL_MAX_FAILURES) {
+          fail('Lost connection while processing.');
+          return;
+        }
       }
-    }, 4000);
+      if (Date.now() - startedAt > POLL_MAX_MS) {
+        fail('Processing is taking too long. Please try again.');
+        return;
+      }
+      pollRef.current = setTimeout(poll, POLL_MS);
+    };
+    pollRef.current = setTimeout(poll, POLL_MS);
   };
 
   const handleGenerate = async () => {
@@ -91,31 +122,42 @@ export default function VideoTranslate() {
   };
 
   const reset = () => {
-    clearInterval(pollRef.current);
+    stopPolling();
     setStep(0); setVideoFile(null); setPreviewUrl(null);
     setVideoId(null); setResult(null); setError(''); setUploading(false);
   };
 
-  const [vttBlobUrl, setVttBlobUrl] = useState(null);
-  const BASE = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8001';
-
-  // Fetch VTT as blob URL when result is ready (solves CORS for <track>)
+  // Assets are fetched through the API client (not plain src/href) so the auth header is sent
   useEffect(() => {
     if (step !== 3 || !videoId) return;
-    fetch(`${BASE}/api/video/vtt/${videoId}`)
-      .then(r => r.text())
-      .then(text => {
-        const blob = new Blob([text], { type: 'text/vtt' });
-        setVttBlobUrl(URL.createObjectURL(blob));
-      })
-      .catch(() => {});
-    return () => { if (vttBlobUrl) URL.revokeObjectURL(vttBlobUrl); };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    let cancelled = false;
+    const urls = [];
+    const load = async (kind, type, setUrl) => {
+      try {
+        const blob = await api.getVideoAsset(videoId, kind);
+        if (cancelled) return;
+        const url = URL.createObjectURL(type ? new Blob([blob], { type }) : blob);
+        urls.push(url);
+        setUrl(url);
+      } catch { /* error toast is shown by the API client */ }
+    };
+    load('vtt', 'text/vtt', setVttBlobUrl);
+    load('download', null, setVideoBlobUrl);
+    return () => {
+      cancelled = true;
+      urls.forEach((url) => URL.revokeObjectURL(url));
+      setVttBlobUrl(null);
+      setVideoBlobUrl(null);
+    };
   }, [step, videoId]);
 
-  const langName = getLangName(targetLang);
-  const downloadUrl = `${BASE}/api/video/download/${videoId}`;
-  const srtUrl = `${BASE}/api/video/srt/${videoId}`;
+  const handleDownloadSrt = async () => {
+    try {
+      downloadBlob(await api.getVideoAsset(videoId, 'srt'), `subtitles_${videoId}.srt`);
+    } catch { /* error toast is shown by the API client */ }
+  };
+
+  const langName = VIDEO_LANG_LABELS[targetLang] || targetLang;
 
   return (
     <div className="min-h-screen" style={{ background: 'var(--bg)' }}>
@@ -210,7 +252,7 @@ export default function VideoTranslate() {
                   onChange={e => setTargetLang(e.target.value)}
                   style={{ width: '100%', appearance: 'none', background: 'rgba(0,0,0,0.03)', border: '1px solid rgba(0,0,0,0.1)', borderRadius: 12, padding: '12px 40px 12px 16px', fontSize: '0.9rem', fontWeight: 600, color: 'var(--text-ink)', cursor: 'pointer', outline: 'none' }}
                 >
-                  {Object.entries(LANGUAGES).map(([name, code]) => (
+                  {Object.entries(VIDEO_LANG_LABELS).map(([code, name]) => (
                     <option key={code} value={code}>{name}</option>
                   ))}
                 </select>
@@ -269,9 +311,8 @@ export default function VideoTranslate() {
             {/* Video player */}
             <div style={{ background: '#000', borderRadius: 16, overflow: 'hidden' }}>
               <video
-                src={downloadUrl}
+                src={videoBlobUrl || undefined}
                 controls
-                crossOrigin="anonymous"
                 style={{ width: '100%', maxHeight: 380, objectFit: 'contain', display: 'block' }}
               >
                 {vttBlobUrl && (
@@ -283,15 +324,14 @@ export default function VideoTranslate() {
                   Subtitles burned in · {langName}
                 </span>
                 <div style={{ display: 'flex', gap: 8 }}>
-                  <a
-                    href={srtUrl}
-                    download={`subtitles_${videoId}.srt`}
-                    style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px', background: 'rgba(255,255,255,0.1)', color: '#fff', borderRadius: 8, fontSize: '0.75rem', fontWeight: 600, textDecoration: 'none' }}
+                  <button
+                    onClick={handleDownloadSrt}
+                    style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px', background: 'rgba(255,255,255,0.1)', color: '#fff', borderRadius: 8, fontSize: '0.75rem', fontWeight: 600, border: 'none', cursor: 'pointer' }}
                   >
                     <FileText style={{ width: 13, height: 13 }} />SRT
-                  </a>
+                  </button>
                   <a
-                    href={downloadUrl}
+                    href={videoBlobUrl || undefined}
                     download={`subtitled_${videoId}.mp4`}
                     style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px', background: 'var(--saffron)', color: '#fff', borderRadius: 8, fontSize: '0.75rem', fontWeight: 600, textDecoration: 'none' }}
                   >

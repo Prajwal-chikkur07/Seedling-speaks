@@ -1,10 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
-import { useAuth } from '@clerk/clerk-react';
 import { Menu } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import * as api from '../services/api';
-import { setAuthToken } from '../services/api';
 import Sidebar from '../components/Sidebar';
 import LoadingOverlay from '../components/LoadingOverlay';
 import Notifications from '../components/Notifications';
@@ -25,7 +23,6 @@ export default function AppShell({ children }) {
   const pollRef = useRef(null);
   const failCountRef = useRef(0);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const { getToken, isLoaded } = useAuth();
 
   // Close sidebar on route change
   useEffect(() => {
@@ -37,21 +34,6 @@ export default function AppShell({ children }) {
   useEffect(() => {
     document.documentElement.classList.toggle('dark', state.darkMode);
   }, [state.darkMode]);
-
-  // Set Clerk auth token for API requests
-  useEffect(() => {
-    if (!isLoaded) return;
-    const setToken = async () => {
-      try {
-        const token = await getToken();
-        setAuthToken(token || null);
-      } catch (err) {
-        console.warn('Failed to get Clerk token:', err);
-        setAuthToken(null);
-      }
-    };
-    setToken();
-  }, [isLoaded, getToken]);
 
   // Offline detection
   useEffect(() => {
@@ -83,7 +65,7 @@ export default function AppShell({ children }) {
   }, [setOnline]);
 
   const isPublicPage = ['/', '/landing', '/auth', '/splash'].includes(location.pathname);
-  const showSidebar = !state.focusMode && !isPublicPage && location.pathname !== '/widget-setup';
+  const showSidebar = !state.focusMode && !isPublicPage;
   const offlineOffsetPx = state.isOnline ? 0 : OFFLINE_BANNER_HEIGHT;
 
   return (
@@ -136,7 +118,7 @@ export default function AppShell({ children }) {
       <NotificationCenter />
       <ToastContainer />
       {!state.onboardingDone && <Onboarding />}
-      {!isPublicPage && location.pathname !== '/widget-setup' && <MobileWidget />}
+      {!isPublicPage && <MobileWidget />}
     </div>
   );
 }
